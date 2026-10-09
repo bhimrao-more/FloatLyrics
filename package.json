@@ -1,0 +1,14 @@
+{
+  "name": "floatlyrics",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Time-synced lyrics in a small always-on-top window for YouTube Music, Spotify and Apple Music.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/core.test.js",
+    "test:e2e": "node test/e2e-ytmusic.mjs"
+  },
+  "devDependencies": {
+    "puppeteer": "^25.13.0"
+  }
+}
