@@ -3,12 +3,13 @@
 Time-synced lyrics in a small always-on-top window, for the song playing in your browser.
 Free and open source (MIT). No account, no API key, no tracking.
 
-Works with the web players of **YouTube Music**, **Spotify** and **Apple Music** in Chrome or Edge 116+.
+Works on **YouTube** and the web players of **YouTube Music**, **Spotify** and **Apple Music** in Chrome or Edge 116+.
 
 ## Status
 
 | Player | Track detection | Synced lyrics |
 | --- | --- | --- |
+| YouTube (`www.youtube.com`, watch pages) | Tested end to end | Tested end to end (`FL_URL=<youtube watch url> npm run test:e2e`) |
 | YouTube Music (`music.youtube.com`) | Tested end to end | Tested end to end (`npm run test:e2e`) |
 | Apple Music (`music.apple.com`) | Tested (signed out) | Not yet tested with a signed-in account |
 | Spotify (`open.spotify.com`) | Not yet tested (needs a login) | Not yet tested |
@@ -22,11 +23,19 @@ Works with the web players of **YouTube Music**, **Spotify** and **Apple Music**
 
 ## Use
 
-Play a song, then click the **♪ Lyrics** pill at the bottom right of the player page. A small window opens that
+Play a song, then click the **♪ Lyrics** pill (on YouTube it only appears on a video page) at the bottom right of the player page. A small window opens that
 stays above every other window and app. Resize it freely; the text scales with it. Keep the player tab open
 (it can be in the background): the window belongs to that tab and closes with it.
 
 Hover the window for **Earlier / Later** to nudge the timing in 0.5s steps when a lyric file is slightly off.
+
+## Look
+
+The window follows Apple's Liquid Glass design. The song's cover, blown up and blurred, tints the window. The
+lyrics sit on that colour, with the current line sharp and the rest softened. The title bar and the timing
+controls are glass capsules that bend the lyrics passing beneath them (an SVG displacement map used as a
+`backdrop-filter`, Chromium only). Chrome draws the floating window opaque, so the desktop does not show through
+it; see [docs/liquid-glass.md](docs/liquid-glass.md) for the research, the limits and the design decisions.
 
 ## How it works
 
@@ -46,6 +55,8 @@ player page ── probe.js ──▶ content.js ──▶ background.js ──�
   window, which the OS keeps on top. Browsers without that API get an in-page panel instead.
 - **`background.js`** is the only part that touches the network. It asks [LRCLIB](https://lrclib.net) for the
   track and caches the answer in `chrome.storage.local`.
+- **`glass.js`** builds the refracting glass: a displacement map computed from Snell's law over a rounded
+  bezel, applied as an SVG `backdrop-filter`.
 - **`core.js`** holds the pure logic (LRC parsing, title cleanup, candidate scoring) and is shared by the
   extension and the Node tests.
 
@@ -71,7 +82,9 @@ There is no build step: `extension/` is loaded as is.
 - Desktop apps: a small local companion (started from the command line) that reads Spotify.app / Music.app and
   feeds the same lyrics view.
 - More lyric sources as fallbacks, word-by-word highlighting, click a line to seek.
-- Visual design: themes, album-art colours, compact single-line mode.
+- Truly see-through glass over other apps: the desktop companion window with native macOS glass
+  ([electron-liquid-glass](https://github.com/Meridius-Labs/electron-liquid-glass), macOS 26+).
+- More looks: light glass, compact single-line mode, word-by-word highlight.
 
 ## Credits
 

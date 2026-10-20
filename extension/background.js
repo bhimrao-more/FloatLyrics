@@ -26,7 +26,7 @@ async function fetchJson(url) {
   }
 }
 
-const cacheKey = (t) => `lyr:${normalize(t.title)}|${normalize(t.artist)}|${Math.round((t.duration || 0) / 5)}`;
+const cacheKey = (t) => `lyr:v2:${t.tempo ? '~' : ''}${normalize(t.title)}|${normalize(t.artist)}|${Math.round((t.duration || 0) / 5)}`;
 
 async function prune() {
   const all = await chrome.storage.local.get(null);

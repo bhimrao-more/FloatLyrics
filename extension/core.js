@@ -28,7 +28,9 @@
 
   // Words that mark a bracket or a " - suffix" as packaging rather than part of the song's name.
   const NOISE =
-    /\b(official|video|audio|lyrics?|visuali[sz]er|remaster(ed)?|version|edit|mix|live|feat\.?|ft\.?|featuring|from|hd|hq|4k|explicit|clean|mono|stereo|deluxe|bonus|acoustic|soundtrack|ost|prod\.?|demo|instrumental)\b/i;
+    /\b(official|video|audio|lyrics?|visuali[sz]er|remaster(ed)?|version|edit|mix|live|feat\.?|ft\.?|featuring|from|hd|hq|4k|explicit|clean|mono|stereo|deluxe|bonus|acoustic|soundtrack|ost|prod\.?|demo|instrumental|slowed|reverb(ed)?|sped|nightcore|daycore|lo-?fi|8d|bass\s*boost(ed)?)\b/i;
+  // Edits played at another speed than the record: the lyric timeline has to be stretched to fit.
+  const TEMPO = /\b(slowed|sped\s*up|speed\s*up|nightcore|daycore)\b/i;
 
   function cleanTitle(title, artist) {
     const original = String(title || '').trim();
@@ -48,6 +50,46 @@
 
     t = t.replace(/\s+(feat\.?|ft\.?|featuring)\s+.*$/i, '');
     return t.replace(/\s+/g, ' ').trim() || original;
+  }
+
+  /*
+   * A youtube.com video is not a track: the title carries the artist and packaging ("Artist - Song (Official
+   * Video)", "Song | Movie | Singer") and the uploader is often a label or "Artist - Topic"/"ArtistVEVO".
+   * Returns the { title, artist } to look up.
+   */
+  function videoTrack(title, channel) {
+    let artist = String(channel || '')
+      .replace(/\s*-\s*topic$/i, '')
+      .replace(/\s*vevo$/i, '')
+      .replace(/\s+official$/i, '')
+      .trim();
+    const segments = String(title || '')
+      .replace(/^\s*(?:full\s+)?(?:video|audio|lyrical|lyrics?|song)\s*(?:video|song)?\s*:\s*/i, '')
+      .replace(/\s*[([{][^)\]}]*[)\]}]/g, (seg) => (NOISE.test(seg) ? '' : seg))
+      .split(/\s+[|｜]\s+/);
+    let t = segments[0]
+      .replace(/\s+(?:full\s+)?(?:official\s+)?(?:music\s+|lyrics?\s+|lyrical\s+)?(?:video|audio)(?:\s+song)?\s*$/i, '')
+      .trim();
+    const tempo = TEMPO.test(String(title || ''));
+    let alt = null;
+    const parts = t.split(/\s+[-–—]\s+/);
+    if (parts.length === 2) {
+      const a = normalize(artist).replace(/ /g, '');
+      const same = (x) => normalize(x).replace(/ /g, '') === a;
+      if (same(parts[0])) [artist, t] = parts;
+      else if (same(parts[1])) t = parts[0];
+      // "Song - Movie | Cast | Composer" (film-label uploads) puts the song first
+      else if (segments.length > 1) t = parts[0];
+      else if (!NOISE.test(parts[1])) {
+        // "Artist - Song" is the usual order, but plenty of uploads say "Song - Artist"; keep both to try
+        alt = { title: parts[0].trim(), artist: parts[1].trim() };
+        [artist, t] = parts;
+      }
+    }
+    const out = { title: t.trim() || String(title || '').trim(), artist };
+    if (alt) out.alt = alt;
+    if (tempo) out.tempo = true;
+    return out;
   }
 
   // "[01:02.34] text" lines, several stamps per line, optional [offset:ms] tag. Returns [{ t, text }] sorted by time.
@@ -131,6 +173,27 @@
    * Resolves { status: 'synced' | 'plain' | 'instrumental' | 'none' | 'error', lines?, approx?, source? }.
    */
   async function findLyrics(track, fetchJson) {
+    const tempo = !!(track && track.tempo);
+    // A slowed/sped-up edit is longer/shorter than the record, so its length cannot pick the version.
+    const base = tempo ? { ...track, duration: 0 } : track;
+    let res = await findOne(base, fetchJson);
+    if (track && track.alt && track.alt.title) {
+      // Which half is the artist is a guess, so ask both ways and keep the closer match.
+      const other = await findOne({ ...base, ...track.alt }, fetchJson);
+      // Ties go to the reading more LRCLIB entries agree on: a real song has many uploads, a mislabel one.
+      const rate = (r) => (r.score || 0) + Math.min(r.votes || 0, 10);
+      if (rate(other) > rate(res)) res = other;
+    }
+    if (tempo && res.status === 'synced' && track.duration > 0 && res.source && res.source.duration > 0) {
+      const k = track.duration / res.source.duration;
+      if (k > 0.5 && k < 2) {
+        res = { ...res, approx: false, stretch: k, lines: res.lines.map((l) => ({ t: l.t * k, text: l.text })) };
+      }
+    }
+    return res;
+  }
+
+  async function findOne(track, fetchJson) {
     const title = String((track && track.title) || '').trim();
     const artist = String((track && track.artist) || '').trim();
     if (!title) return { status: 'none' };
@@ -180,6 +243,9 @@
     if (!b || b.score < ACCEPT) return { status: attempts > 0 && failures === attempts ? 'error' : 'none' };
 
     const c = b.c;
+    const score = b.score;
+    let votes = 0;
+    for (const x of pool.values()) if (scoreCandidate(x, want) >= ACCEPT) votes++;
     const source = {
       provider: 'LRCLIB',
       id: c.id,
@@ -191,17 +257,17 @@
     const lines = hasSynced(c) ? parseLrc(c.syncedLyrics) : [];
     if (lines.length) {
       const approx = !!(want.duration && c.duration && Math.abs(c.duration - want.duration) > 5);
-      return { status: 'synced', lines, approx, source };
+      return { status: 'synced', lines, approx, source, score, votes };
     }
     if (hasPlain(c)) {
       const plain = c.plainLyrics.split(/\r?\n/).map((text) => ({ t: -1, text: text.trim() }));
-      return { status: 'plain', lines: plain, source };
+      return { status: 'plain', lines: plain, source, score, votes };
     }
-    if (c.instrumental) return { status: 'instrumental', source };
+    if (c.instrumental) return { status: 'instrumental', source, score, votes };
     return { status: 'none' };
   }
 
-  const api = { normalize, primaryArtist, cleanTitle, parseLrc, indexAt, scoreCandidate, findLyrics };
+  const api = { normalize, primaryArtist, cleanTitle, videoTrack, parseLrc, indexAt, scoreCandidate, findLyrics };
   root.FloatLyricsCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof self !== 'undefined' ? self : globalThis);

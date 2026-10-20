@@ -55,7 +55,7 @@ try {
   check(!s.missing, 'launcher injected into the page');
 
   s = await waitFor((x) => x.t != null, 20000);
-  if (s.paused) await page.click('#play-pause-button').catch(() => {});
+  if (s.paused) await page.click(URL.includes('music.youtube') ? '#play-pause-button' : '.ytp-play-button').catch(() => {});
   s = await waitFor((x) => x.paused === false && x.t > 0.5, 25000);
   check(s.paused === false, 'song is playing', `t=${s.t}`);
 
@@ -80,6 +80,9 @@ try {
   check(s.flMode === 'pip', 'Document Picture-in-Picture window opened', `mode=${s.flMode}`);
   check(Number(s.flRendered) > 10, 'lyric lines rendered in the window', `${s.flRendered} lines`);
   check(s.flCss === 'ok', 'styles applied inside the window', `css=${s.flCss}`);
+  s = await waitFor((x) => x.flArt === 'loaded', 8000);
+  check(s.flArt === 'loaded', 'album cover loaded as the colour field');
+  check(Number(s.flLens) === 2, 'glass capsules refract (SVG lens backdrop filters)', `${s.flLens} of 2`);
 
   // Jump into the first verse and watch the highlighted line track the audio.
   await page.evaluate(() => (document.querySelector('video').currentTime = 42));
@@ -108,17 +111,33 @@ try {
   await sleep(2500);
   check((await read()).flLine === before, 'lyrics hold while paused');
 
+  // FL_SHOT=out.png saves the floating window as opened, with the controls showing, and at a taller size.
   if (SHOT) {
     for (const target of browser.targets()) {
       if (target === page.target() || target.url() !== 'about:blank') continue;
       const pip = await target.asPage().catch(() => null);
-      if (!pip) continue;
-      const isOurs = await pip.evaluate(() => !!document.querySelector('.fl')).catch(() => false);
-      if (isOurs) {
-        await pip.screenshot({ path: SHOT });
-        console.log(`  screenshot of the floating window: ${SHOT}`);
-      }
+      if (!pip || !(await pip.evaluate(() => !!document.querySelector('.fl')).catch(() => false))) continue;
+      const shot = async (suffix) => {
+        const file = SHOT.replace(/\.png$/, `${suffix}.png`);
+        await sleep(900);
+        await pip.screenshot({ path: file });
+        console.log(`  screenshot: ${file}`);
+      };
+      await pip.setViewport({ width: 380, height: 190, deviceScaleFactor: 2 });
+      await shot('');
+      await pip.mouse.move(190, 120);
+      await shot('-hover');
+      await pip.mouse.move(0, 0);
+      await pip.setViewport({ width: 360, height: 440, deviceScaleFactor: 2 });
+      await shot('-tall');
     }
+    const r = await page.evaluate(() => {
+      const b = document.getElementById('floatlyrics-host').shadowRoot.querySelector('.fl-launch').getBoundingClientRect();
+      return { x: Math.max(0, b.x - 120), y: Math.max(0, b.y - 60), width: b.width + 160, height: b.height + 100 };
+    });
+    const file = SHOT.replace(/\.png$/, '-launcher.png');
+    await page.screenshot({ path: file, clip: r });
+    console.log(`  screenshot: ${file}`);
   }
 } catch (err) {
   check(false, 'test ran to completion', String(err));

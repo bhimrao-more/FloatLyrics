@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "FloatLyrics",
-  "version": "0.1.0",
-  "description": "Time-synced lyrics in a small always-on-top window for YouTube Music, Spotify and Apple Music web players.",
+  "version": "0.3.0",
+  "description": "Time-synced lyrics in a small always-on-top window for YouTube, YouTube Music, Spotify and Apple Music web players.",
   "minimum_chrome_version": "116",
   "permissions": ["storage"],
   "host_permissions": ["https://lrclib.net/*"],
@@ -14,14 +14,14 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://music.youtube.com/*", "https://open.spotify.com/*", "https://music.apple.com/*", "https://beta.music.apple.com/*"],
+      "matches": ["https://music.youtube.com/*", "https://www.youtube.com/*", "https://open.spotify.com/*", "https://music.apple.com/*", "https://beta.music.apple.com/*"],
       "js": ["probe.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
-      "matches": ["https://music.youtube.com/*", "https://open.spotify.com/*", "https://music.apple.com/*", "https://beta.music.apple.com/*"],
-      "js": ["core.js", "content.js"],
+      "matches": ["https://music.youtube.com/*", "https://www.youtube.com/*", "https://open.spotify.com/*", "https://music.apple.com/*", "https://beta.music.apple.com/*"],
+      "js": ["core.js", "glass.js", "content.js"],
       "run_at": "document_idle"
     }
   ]

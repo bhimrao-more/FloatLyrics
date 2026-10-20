@@ -11,11 +11,13 @@
   const hostname = location.hostname;
   const site = hostname.includes('spotify')
     ? 'spotify'
-    : hostname.includes('youtube')
+    : hostname === 'music.youtube.com'
       ? 'ytmusic'
-      : hostname.includes('apple')
-        ? 'applemusic'
-        : 'other';
+      : hostname.includes('youtube')
+        ? 'youtube'
+        : hostname.includes('apple')
+          ? 'applemusic'
+          : 'other';
 
   const media = new Set();
   const lastPlay = new WeakMap();
@@ -58,6 +60,12 @@
   }
 
   function activeMedia() {
+    // youtube.com also plays muted hover previews of other videos; only the main player counts there.
+    if (site === 'youtube') {
+      const main = document.querySelector('#movie_player video');
+      if (main) watch(main);
+      return main;
+    }
     for (const el of document.querySelectorAll('audio, video')) watch(el);
     let best = null;
     let bestScore = -1;
@@ -102,6 +110,11 @@
       const byline = text('.byline', bar).split('•').map((s) => s.trim());
       const ad = !!document.querySelector('.html5-video-player.ad-showing');
       return { pos, dur, ad, title: text('.title', bar), artist: byline[0] || '', album: byline.length >= 3 ? byline[1] : '' };
+    }
+    if (site === 'youtube') {
+      if (!location.pathname.startsWith('/watch')) return { off: true };
+      const ad = !!document.querySelector('#movie_player.ad-showing');
+      return { ad, title: text('ytd-watch-metadata h1'), artist: text('ytd-watch-metadata ytd-channel-name a'), album: '' };
     }
     return {};
   }
@@ -150,6 +163,9 @@
     if (site === 'spotify' && dom.dur > 0) duration = dom.dur;
     if (!duration && dom.dur > 0) duration = dom.dur;
     if (!duration && posState && Number.isFinite(posState.duration) && posState.duration > 0) duration = posState.duration;
+
+    // Off a watch page youtube.com keeps the last video's Media Session around; there is no song then.
+    if (dom.off) return { site, title: '', artist: '', album: '', artwork: '', ad: false, duration: 0, position: 0, hasPosition: false, paused: true, rate: 1, src: 'none', at: now };
 
     const art = md && md.artwork && md.artwork.length ? md.artwork[md.artwork.length - 1].src : '';
     return {
