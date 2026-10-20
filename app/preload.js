@@ -1,7 +1,7 @@
 // The only bridge between the window and the main process.
 const { contextBridge, ipcRenderer } = require('electron');
 
-const CHANNELS = ['np', 'art', 'lyrics', 'glass', 'settings', 'offset', 'island'];
+const CHANNELS = ['np', 'art', 'lyrics', 'glass', 'settings', 'offset', 'island', 'hover'];
 
 contextBridge.exposeInMainWorld('floatlyrics', {
   on(channel, fn) {
@@ -15,5 +15,9 @@ contextBridge.exposeInMainWorld('floatlyrics', {
   islandHover: (inside) => ipcRenderer.send('island:hover', !!inside),
   minimize: () => ipcRenderer.send('window:minimize'),
   restore: () => ipcRenderer.send('window:restore'),
+  chooseVersion: (index) => ipcRenderer.send('lyrics:version', index),
+  nextSource: () => ipcRenderer.send('source:next'),
   close: () => ipcRenderer.send('close'),
+  moveStart: () => ipcRenderer.send('move:start'),
+  moveEnd: () => ipcRenderer.send('move:end'),
 });

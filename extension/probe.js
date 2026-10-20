@@ -47,6 +47,18 @@
   };
 
   const session = navigator.mediaSession;
+  // The handlers the site registers for media keys (play, pause, next…), so the desktop app can use them too.
+  const handlers = new Map();
+  if (session && typeof session.setActionHandler === 'function') {
+    const nativeHandler = session.setActionHandler.bind(session);
+    session.setActionHandler = (action, fn) => {
+      try {
+        if (fn) handlers.set(action, fn);
+        else handlers.delete(action);
+      } catch (err) {}
+      return nativeHandler(action, fn);
+    };
+  }
   if (session && typeof session.setPositionState === 'function') {
     const nativeSet = session.setPositionState.bind(session);
     session.setPositionState = (state) => {
@@ -190,6 +202,25 @@
       document.dispatchEvent(new CustomEvent('floatlyrics:state', { detail: JSON.stringify(snapshot()) }));
     } catch (err) {}
   }
+
+  // Commands from the FloatLyrics desktop app (via content.js). The site's own media-key handlers do it best.
+  document.addEventListener('floatlyrics:command', (e) => {
+    try {
+      const name = String(e.detail);
+      const el = activeMedia();
+      const handler = (action) => handlers.get(action);
+      if (name === 'toggle') {
+        const paused = el ? el.paused : session && session.playbackState === 'paused';
+        const action = paused ? 'play' : 'pause';
+        if (handler(action)) handler(action)({ action });
+        else if (el) paused ? el.play() : el.pause();
+      } else if (name === 'next' || name === 'previous') {
+        const action = name === 'next' ? 'nexttrack' : 'previoustrack';
+        if (handler(action)) handler(action)({ action });
+      }
+      setTimeout(report, 150);
+    } catch (err) {}
+  });
 
   setInterval(report, 250);
 })();

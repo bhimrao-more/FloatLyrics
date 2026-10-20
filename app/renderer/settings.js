@@ -33,7 +33,9 @@
       api.setSettings({ [key]: Number(e.target.value) });
     });
   }
-  for (const b of $('align').querySelectorAll('button')) b.addEventListener('click', () => api.setSettings({ align: b.dataset.value }));
+  for (const id of ['align', 'islandScreen']) {
+    for (const b of $(id).querySelectorAll('button')) b.addEventListener('click', () => api.setSettings({ [id]: b.dataset.value }));
+  }
   for (const key of ['focus', 'onTop', 'island']) $(key).addEventListener('change', (e) => api.setSettings({ [key]: e.target.checked }));
   $('reset').addEventListener('click', () => api.resetSettings());
 
@@ -44,7 +46,9 @@
       $(key).value = settings[key];
       $(`${key}Out`).textContent = looks.STEP_NAMES[key][settings[key]];
     }
-    for (const b of $('align').querySelectorAll('button')) b.setAttribute('aria-checked', String(b.dataset.value === settings.align));
+    for (const id of ['align', 'islandScreen']) {
+      for (const b of $(id).querySelectorAll('button')) b.setAttribute('aria-checked', String(b.dataset.value === settings[id]));
+    }
     $('focus').checked = settings.focus;
     $('onTop').checked = settings.onTop;
     $('island').checked = settings.island;

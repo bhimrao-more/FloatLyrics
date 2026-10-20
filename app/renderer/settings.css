@@ -33,10 +33,7 @@ body {
   cursor: default;
 }
 .drag {
-  position: fixed;
-  inset: 0 0 auto 0;
-  height: 38px;
-  -webkit-app-region: drag;
+  height: 0; /* the window moves by its standard title bar strip; no custom drag areas (they swallowed clicks) */
 }
 .st {
   padding: 46px 22px 20px;

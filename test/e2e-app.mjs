@@ -1,6 +1,7 @@
-// End-to-end test of the desktop app. A test browser plays a song on YouTube Music (at 2% volume) so macOS
-// Now Playing reports it; the app, driven over the DevTools protocol, must show that song's synced lyrics in
-// time with the player, and its play/pause/next buttons must control that player.
+// End-to-end test of the desktop app. A test browser with the FloatLyrics extension plays a song on YouTube
+// Music (at 2% volume). The extension feeds the app the tab's exact state (FL_NO_EXT=1 leaves it out, so the
+// app falls back to macOS Now Playing). Driven over the DevTools protocol, the app must show the song's synced
+// lyrics in time with the player, and its play/pause/next buttons must control that player.
 //   npm run test:app            FL_SHOT=<png path> also saves screenshots of the window
 import puppeteer from 'puppeteer';
 import electronPath from 'electron';
@@ -21,7 +22,27 @@ const check = (ok, label, detail = '') => {
   if (!ok) failures.push(label);
 };
 
-const player = await puppeteer.launch({ headless: false, defaultViewport: null, args: ['--autoplay-policy=no-user-gesture-required', '--window-size=900,640'] });
+const withExtension = !process.env.FL_NO_EXT;
+// A copy of the extension that talks to the test app's port, so a FloatLyrics you have open is left alone.
+const BRIDGE_PORT = 47299;
+const EXT = fs.mkdtempSync(path.join(os.tmpdir(), 'floatlyrics-ext-'));
+fs.cpSync(path.join(ROOT, 'extension'), EXT, { recursive: true });
+const bg = path.join(EXT, 'background.js');
+fs.writeFileSync(bg, fs.readFileSync(bg, 'utf8').replace('127.0.0.1:47231', `127.0.0.1:${BRIDGE_PORT}`));
+// FL_HEADLESS=1: the test player stays invisible and out of macOS Now Playing (it feeds the app via the extension).
+const player = await puppeteer.launch({
+  headless: !!process.env.FL_HEADLESS,
+  defaultViewport: null,
+  ignoreDefaultArgs: withExtension ? ['--disable-extensions'] : [],
+  args: [
+    '--autoplay-policy=no-user-gesture-required',
+    '--window-size=900,640',
+    '--mute-audio',
+    // With the extension feeding the app, keep the test player out of macOS Now Playing entirely, so whatever
+    // you are listening to stays yours while the test runs.
+    ...(withExtension ? [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`, '--disable-features=HardwareMediaKeyHandling'] : []),
+  ],
+});
 let appProc = null;
 let appBrowser = null;
 try {
@@ -42,9 +63,15 @@ try {
     { timeout: 150000, polling: 500 },
   );
   check(true, 'test player is playing the song');
+  // Out of the way: the player keeps playing minimised.
+  if (!process.env.FL_HEADLESS) {
+    const cdp = await page.createCDPSession();
+    const { windowId } = await cdp.send('Browser.getWindowForTarget');
+    await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
+  }
 
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'floatlyrics-test-'));
-  appProc = spawn(electronPath, ['.'], { cwd: ROOT, env: { ...process.env, FL_DEBUG_PORT: String(PORT), FL_USER_DATA: userData }, stdio: 'ignore' });
+  appProc = spawn(electronPath, ['.'], { cwd: ROOT, env: { ...process.env, FL_DEBUG_PORT: String(PORT), FL_USER_DATA: userData, FL_BRIDGE_PORT: String(BRIDGE_PORT), FL_TEST: '1' }, stdio: 'ignore' });
   for (let i = 0; i < 60 && !appBrowser; i++) {
     await sleep(500);
     appBrowser = await puppeteer.connect({ browserURL: `http://127.0.0.1:${PORT}`, defaultViewport: null }).catch(() => null);
@@ -67,7 +94,17 @@ try {
   };
 
   let s = await waitFor((x) => x.status === 'synced' || x.status === 'none' || x.status === 'error', 30000);
-  check(/testing|chromium/i.test(s.app || ''), 'app follows the playing app via Now Playing', `${s.app} · ${s.track}`);
+  if (withExtension) {
+    s = await waitFor((x) => (x.app || '').startsWith('extension:'), 8000);
+    check((s.app || '').startsWith('extension:'), "app uses the extension's exact player state", `${s.app} · ${s.track}`);
+    const pill = await page.evaluate(() => {
+      const h = document.getElementById('floatlyrics-host');
+      const b = h && h.shadowRoot.querySelector('.fl-launch');
+      return b ? getComputedStyle(b).display : 'missing';
+    });
+    check(pill === 'none', "the page's own ♪ Lyrics button steps aside while the app runs", `display=${pill}`);
+  }
+  else check(/testing|chromium/i.test(s.app || ''), 'app follows the playing app via Now Playing', `${s.app} · ${s.track}`);
   check(s.status === 'synced', 'synced lyrics found', `status=${s.status} · matched ${s.match}`);
   s = await waitFor((x) => x.glass && x.art === 'loaded', 8000);
   check(s.glass === 'liquid', 'native Liquid Glass behind the window', `glass=${s.glass}`);
@@ -96,6 +133,53 @@ try {
   }
   check(total > 0 && good / total >= 0.9, 'highlighted line matches the player', `${good}/${total} samples in sync`);
   check(seen.size >= 2, 'lines advance with the song', `${seen.size} lines in 12s`);
+
+  // Pressing the title starts moving the window and releasing stops it (the app then follows the real cursor,
+  // which this test's synthetic mouse does not move). No macOS drag areas may be left to swallow clicks.
+  {
+    const r = await win.evaluate(() => { const b = document.querySelector('.fl-meta').getBoundingClientRect(); return { x: b.x + 20, y: b.y + b.height / 2 }; });
+    await win.mouse.move(r.x, r.y);
+    await win.mouse.down();
+    const during = await win.evaluate(() => document.getElementById('fl').classList.contains('is-moving'));
+    await win.mouse.up();
+    const after = await win.evaluate(() => document.getElementById('fl').classList.contains('is-moving'));
+    check(during && !after, 'pressing the title starts a move, releasing ends it');
+    const hasDragAreas = await win.evaluate(() => [...document.querySelectorAll('*')].some((n) => getComputedStyle(n).getPropertyValue('-webkit-app-region').trim() === 'drag'));
+    check(!hasDragAreas, 'no macOS drag areas left to swallow clicks');
+  }
+
+  // Two players at once: a non-music video starts in a second tab. The song stays followed (music beats a video),
+  // ⇄ offers the other one, and following the video says it is not a song.
+  if (withExtension) {
+    const video = await player.newPage();
+    await video.goto('https://www.youtube.com/watch?v=aqz-KE-bpKQ', { waitUntil: 'domcontentloaded' }).catch(() => {});
+    const started = await video
+      .waitForFunction(() => { const v = document.querySelector('#movie_player video'); if (v) v.volume = 0.02; return v && !v.paused && v.duration > 60 && !document.querySelector('.ad-showing'); }, { timeout: 90000, polling: 500 })
+      .then(() => true, () => false);
+    if (!started) console.log('SKIP  two players at once  — the second video did not start');
+    else {
+      // (Your own browser may be listed too, via macOS Now Playing; the test looks for the video by name.)
+      s = await waitFor((x) => (x.sourceNames || '').split('|').includes('YouTube'), 10000);
+      check((s.sourceNames || '').split('|').includes('YouTube'), '⇄ offers the second player', s.sourceNames);
+      check((s.app || '') === 'extension:ytmusic', 'the song stays followed while a video plays too', s.app);
+      for (let k = 0; k < 4 && (s.app || '') !== 'extension:youtube'; k++) {
+        await win.evaluate(() => document.getElementById('source').click());
+        s = await waitFor((x) => (x.app || '') === 'extension:youtube', 2500);
+      }
+      s = await waitFor((x) => (x.app || '') === 'extension:youtube' && x.status === 'none', 20000);
+      const msg = await win.evaluate(() => document.getElementById('msg').textContent);
+      check((s.app || '') === 'extension:youtube' && /doesn't look like a song/.test(msg), '⇄ follows the video, which is not a song', `${s.app} · "${msg}"`);
+      for (let k = 0; k < 4 && (s.app || '') !== 'extension:ytmusic'; k++) {
+        await win.evaluate(() => document.getElementById('source').click());
+        s = await waitFor((x) => (x.app || '') === 'extension:ytmusic', 2500);
+      }
+      s = await waitFor((x) => (x.app || '') === 'extension:ytmusic' && x.status === 'synced', 15000);
+      check((s.app || '') === 'extension:ytmusic' && s.status === 'synced', '⇄ again goes back to the song', `${s.app} · ${s.status}`);
+    }
+    await video.close();
+    await page.bringToFront().catch(() => {});
+    await sleep(3000);
+  }
 
   // Appearance: the popover changes theme and text size; Advanced opens Settings, which updates the window live.
   const press = async (target, sel) => {
@@ -180,7 +264,16 @@ try {
     }
     check(same / n >= 0.8, 'island shows the same line as the lyrics clock', `${same}/${n} samples agree`);
     st = await islandWait((x) => x.state === 'lyric', 8000);
-    if (SHOT) await isl.screenshot({ path: SHOT.replace(/\.png$/, '-island.png'), omitBackground: true });
+    if (SHOT) {
+      await isl.screenshot({ path: SHOT.replace(/\.png$/, '-island.png'), omitBackground: true });
+      // Frames through one line change, to see the reel move.
+      const from = (await readIsland()).text;
+      await islandWait((x) => x.text !== from, 8000);
+      for (const ms of [0, 90, 180, 320, 700]) {
+        if (ms) await sleep(ms - (ms > 90 ? [0, 90, 180, 320, 700][[0, 90, 180, 320, 700].indexOf(ms) - 1] : 0));
+        await isl.screenshot({ path: SHOT.replace(/\.png$/, `-reel-${String(ms).padStart(3, '0')}.png`), omitBackground: true, clip: { x: 0, y: 0, width: 640, height: 130 } });
+      }
+    }
     await isl.mouse.move(320, 14);
     await sleep(120);
     await isl.mouse.move(322, 16);
@@ -194,10 +287,11 @@ try {
     await sleep(600);
   }
 
-  // Controls go to the player through Now Playing. Only press them while the test player is the one in charge.
-  if (/testing|chromium/i.test(s.app || '')) {
-    // macOS follows one player at a time; never press a button while it follows someone else's.
-    const ours = async () => /testing|chromium/i.test((await read()).app || '');
+  // Controls go to the player the lyrics come from. Through the extension that is the test tab itself; through
+  // Now Playing it is whatever macOS picked, so only press buttons while that is the test player.
+  const oursNow = (a) => (a.app || '').startsWith('extension:') || /testing|chromium/i.test(a.npApp || a.app || '');
+  if (oursNow(s)) {
+    const ours = async () => oursNow(await read());
     const click = async (id) => {
       if (!(await ours())) throw new Error('Now Playing switched to another app; stopped before sending a command');
       const r = await win.evaluate((sel) => {
@@ -230,8 +324,8 @@ try {
     const after = (await until((v) => v.title !== before, 8000)).title;
     check(after !== before, 'next button skips to the next track', `${before} → ${after}`);
     const song = after.replace(/\s*[([].*$/, '');
-    s = await waitFor((x) => (x.track || '').startsWith(song) || !/testing|chromium/i.test(x.app || ''), 8000);
-    if (/testing|chromium/i.test(s.app || '')) check((s.track || '').startsWith(song), 'window follows the new track', s.track);
+    s = await waitFor((x) => (x.track || '').startsWith(song) || !oursNow(x), 15000);
+    if (oursNow(s)) check((s.track || '').startsWith(song), 'window follows the new track', s.track);
     else console.log(`SKIP  window follows the new track  — macOS moved Now Playing to ${s.app} (${s.track})`);
   }
 

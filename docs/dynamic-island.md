@@ -41,6 +41,32 @@ DynamicNotchKit's states and floating fallback are the model; no code is copied 
 - **Hand-over animation.** On minimise the window animates its bounds into the notch rectangle
   (`setBounds(…, animate)`), hides, and the island activates. Restore runs the reverse.
 
+## Motion (`app/renderer/island.js`, Motion 12, MIT)
+
+- **Library.** [Motion](https://motion.dev) (the engine behind Framer Motion), MIT. GSAP was considered; it is free
+  but not open source. Motion's springs are physical: an interrupted move keeps its velocity, which is what makes
+  rapid line changes and resizes feel continuous.
+- **Reel.** Every line is a row in one column; the column slides up on a critically damped spring (stiffness 170,
+  damping 26: no wobble under words being read). Rows change state with a long ease-out
+  (`cubic-bezier(0.22, 1, 0.36, 1)`):
+  - current: bright, full size;
+  - next: 34% opacity, scaled 0.84, one line;
+  - past: fades out and blurs 5px as it leaves upward.
+
+  A jump of more than three lines (a seek) lands without scrolling.
+- **Shape.** Width, height and corners spring with stiffness 380, damping 25 (damping ratio ≈ 0.65: the slight
+  overshoot of iPhone's island).
+- **Type.** SF Pro (system), 16px semibold (15px in the pill), tracking −0.014em, balanced wrapping, two lines max.
+- **The window's lyric list** scrolls on the same kind of spring (Motion animating `scrollTop`), not the browser's
+  stock smooth scroll.
+- **Reduce Motion** turns every spring into an instant change.
+
+## The pill (screens without a notch)
+
+One row, 40px tall (taller when a line wraps): round cover on the left, the lyric scrolling up inside the row,
+equaliser on the right. Hover drops the controls row below. It appears when the island's screen has no notch:
+lid closed, or Settings → *Island appears on → Window's screen* with the window on an external monitor.
+
 ## States and sizes (`app/renderer/island.js`)
 
 | State | When | Size |

@@ -188,6 +188,7 @@
       const k = track.duration / res.source.duration;
       if (k > 0.5 && k < 2) {
         res = { ...res, approx: false, stretch: k, lines: res.lines.map((l) => ({ t: l.t * k, text: l.text })) };
+        delete res.versions; // other recordings would need their own stretch; the stretched match is the answer
       }
     }
     return res;
@@ -230,11 +231,16 @@
       return !!b && hasSynced(b.c) && b.score >= confidentAt;
     };
 
-    // Exact signature first (cheap, precise), then progressively looser searches.
+    // Exact signature and a title + artist search together: the first is precise, the second finds the other
+    // recordings (live, acoustic…) to offer. Then progressively looser searches if neither is convincing.
     if (want.duration && artist) {
-      await run('/get', { track_name: title, artist_name: artist, duration: Math.round(want.duration) });
+      await Promise.all([
+        run('/get', { track_name: title, artist_name: artist, duration: Math.round(want.duration) }),
+        want.artist ? run('/search', { track_name: want.title, artist_name: want.artist }) : null,
+      ]);
+    } else if (want.artist) {
+      await run('/search', { track_name: want.title, artist_name: want.artist });
     }
-    if (!confident() && want.artist) await run('/search', { track_name: want.title, artist_name: want.artist });
     if (!confident()) await run('/search', { q: `${want.title} ${want.artist}`.trim() });
     const sofar = best();
     if ((!sofar || sofar.score < ACCEPT) && want.artist) await run('/search', { track_name: want.title });
@@ -246,18 +252,23 @@
     const score = b.score;
     let votes = 0;
     for (const x of pool.values()) if (scoreCandidate(x, want) >= ACCEPT) votes++;
-    const source = {
-      provider: 'LRCLIB',
-      id: c.id,
-      title: c.trackName,
-      artist: c.artistName,
-      album: c.albumName,
-      duration: c.duration,
-    };
+    const sourceOf = (x) => ({ provider: 'LRCLIB', id: x.id, title: x.trackName, artist: x.artistName, album: x.albumName, duration: x.duration });
+    const approxOf = (x) => !!(want.duration && x.duration && Math.abs(x.duration - want.duration) > 5);
+    const source = sourceOf(c);
     const lines = hasSynced(c) ? parseLrc(c.syncedLyrics) : [];
     if (lines.length) {
-      const approx = !!(want.duration && c.duration && Math.abs(c.duration - want.duration) > 5);
-      return { status: 'synced', lines, approx, source, score, votes };
+      // Songs with several recordings (live, acoustic, remaster) can match more than one file. Keep the next best
+      // few, one per recording, so a person can switch when the timing is clearly another version.
+      const versions = [];
+      const ranked = [...pool.values()].filter(hasSynced).map((x) => ({ x, s: scoreCandidate(x, want) }));
+      for (const { x } of ranked.filter((v) => v.s >= ACCEPT).sort((p, q) => q.s - p.s)) {
+        if (versions.length >= 4) break;
+        if (versions.some((v) => Math.abs((v.source.duration || 0) - (x.duration || 0)) < 3)) continue;
+        versions.push({ source: sourceOf(x), lines: parseLrc(x.syncedLyrics), approx: approxOf(x) });
+      }
+      const out = { status: 'synced', lines, approx: approxOf(c), source, score, votes };
+      if (versions.length > 1) out.versions = versions;
+      return out;
     }
     if (hasPlain(c)) {
       const plain = c.plainLyrics.split(/\r?\n/).map((text) => ({ t: -1, text: text.trim() }));

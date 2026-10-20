@@ -4,6 +4,7 @@
  */
 const { app, BrowserWindow, Menu, ipcMain, screen } = require('electron');
 const fs = require('node:fs');
+const http = require('node:http');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const { NowPlaying } = require('./nowplaying');
@@ -11,7 +12,14 @@ const { createLyrics } = require('./lyrics');
 const { normalize, videoTrack } = require('../extension/core.js');
 const looks = require('./renderer/looks.js');
 
-// For the e2e test: a DevTools port to drive the window, and a throwaway settings folder.
+// For the e2e test: a DevTools port to drive the window, and a throwaway settings folder. Test copies are
+// invisible and click-through (FL_TEST), so nobody mistakes them for the real app or clicks them by accident.
+const TEST = !!process.env.FL_TEST;
+const hideForTest = (w) => {
+  if (!TEST) return;
+  w.setOpacity(0);
+  w.setIgnoreMouseEvents(true);
+};
 if (process.env.FL_DEBUG_PORT) app.commandLine.appendSwitch('remote-debugging-port', process.env.FL_DEBUG_PORT);
 if (process.env.FL_USER_DATA) app.setPath('userData', process.env.FL_USER_DATA);
 
@@ -28,9 +36,7 @@ let islandActive = false;
 let settingsWin = null;
 let settings = looks.DEFAULTS;
 const last = {}; // latest message per channel, replayed when a window (re)loads
-let trackKey = '';
-let lookupTimer = null;
-const offsets = new Map(); // the user's timing nudge per track, shared by the window and the island
+const offsets = new Map(); // the user's timing nudge per song, shared by the window and the island
 
 function send(channel, data) {
   last[channel] = data;
@@ -43,48 +49,282 @@ function replay(w) {
   for (const [channel, data] of Object.entries(last)) w.webContents.send(channel, data);
 }
 
-function trackOf(s) {
+/* ---------- what is playing ----------
+ * Two sources. The browser extension reads the page's own <video>, so for Chrome tabs it is exact: position,
+ * length and adverts. macOS Now Playing covers every other app (Music, Spotify, Safari…), but for browsers it
+ * follows whichever media element is active, which on YouTube includes pause ads and previews.
+ */
+
+let npState = {}; // merged Now Playing state from the adapter
+let npArt = '';
+const tabs = new Map(); // extension reports by browser tab
+const TAB_FRESH_MS = 2500;
+let lastSong = null; // the last real song (≥ 30s), to see through YouTube's short pause ads
+let current = null; // the report on screen
+let emptySince = 0;
+let npPlayingSince = 0; // when Now Playing started playing its current item
+
+// Chrome sometimes reports a playing web player with no length and no clock at all (position stuck at 0).
+const npHasPosition = () => !!(npState.timestampEpochMicros || npState.durationMicros);
+const positionOf = (r, now) => r.elapsed + (r.playing ? Math.max(0, ((now - r.at) / 1000) * r.rate) : 0);
+const sameTitle = (a, b) => !!a && !!b && normalize(a.title) === normalize(b.title);
+
+function nowPlayingReport() {
+  const s = npState;
   if (!s.title) return null;
-  const base = BROWSER.test(s.bundleIdentifier || '') ? videoTrack(s.title, s.artist) : { title: s.title, artist: s.artist || '' };
-  return { ...base, album: s.album || '', duration: (s.durationMicros || 0) / 1e6 };
+  const bundle = s.bundleIdentifier || '';
+  const base = BROWSER.test(bundle) ? videoTrack(s.title, s.artist) : { title: s.title, artist: s.artist || '' };
+  const rate = s.playbackRate || 0;
+  return {
+    ...base,
+    source: 'nowplaying',
+    app: bundle,
+    album: s.album || '',
+    duration: (s.durationMicros || 0) / 1e6,
+    elapsed: (s.elapsedTimeMicros || 0) / 1e6,
+    at: s.timestampEpochMicros ? s.timestampEpochMicros / 1000 : Date.now(),
+    rate: rate || 1,
+    playing: s.playing != null ? !!s.playing : rate > 0,
+    lead: leadFor(bundle),
+    ad: false,
+    art: npArt,
+  };
 }
 
-function onNowPlaying(state, diff) {
-  const track = trackOf(state);
-  const app = state.bundleIdentifier || '';
-  const key = track ? `${app}|${normalize(track.title)}|${normalize(track.artist)}|${Math.round(track.duration / 10)}` : '';
-  const rate = state.playbackRate || 0;
+const SITE_NAMES = { ytmusic: 'YouTube Music', youtube: 'YouTube', spotify: 'Spotify', applemusic: 'Apple Music' };
+const APP_NAMES = {
+  'com.apple.Music': 'Music',
+  'com.spotify.client': 'Spotify',
+  'com.google.Chrome': 'Chrome',
+  'com.apple.Safari': 'Safari',
+  'company.thebrowser.Browser': 'Arc',
+  'com.microsoft.edgemac': 'Edge',
+  'com.brave.Browser': 'Brave',
+  'org.mozilla.firefox': 'Firefox',
+};
+// Players that are about music (as opposed to a YouTube tab, which might be a talk or a movie clip).
+const MUSIC_APP = /^(com\.apple\.Music|com\.apple\.iTunes|com\.spotify\.client|com\.tidal|com\.amazon\.music|com\.deezer|sh\.cider|com\.pear)/i;
+const isMusicSource = (r) => (r.source === 'extension' ? /^(ytmusic|spotify|applemusic)$/.test(r.site) : MUSIC_APP.test(r.app));
+const labelOf = (r) =>
+  r.source === 'extension' ? SITE_NAMES[r.site] || 'Browser' : APP_NAMES[r.app] || (r.app || 'App').split('.').pop();
+
+// Every open tab the extension reports on, as a report. Tabs that stopped reporting (closed, navigated) drop out.
+function tabReports(now) {
+  const out = [];
+  for (const [id, t] of tabs) {
+    if (now - t.receivedAt > TAB_FRESH_MS) {
+      tabs.delete(id);
+      continue;
+    }
+    if (!t.title && !t.ad) continue;
+    out.push({
+      id: `tab:${id}`,
+      tabId: id,
+      site: t.site || 'web',
+      title: t.title || '',
+      artist: t.artist || '',
+      alt: t.alt,
+      tempo: t.tempo,
+      source: 'extension',
+      app: `extension:${t.site || 'web'}`,
+      album: t.album || '',
+      duration: t.duration || 0,
+      elapsed: t.position || 0,
+      at: t.at || now,
+      rate: t.rate || 1,
+      playing: !t.paused,
+      startedAt: t.startedAt || 0,
+      lead: 0,
+      ad: !!t.ad,
+      art: t.artwork || '',
+    });
+  }
+  return out;
+}
+
+// Everything that could be followed right now. Now Playing joins unless it is just one of the tabs again.
+function candidates(now) {
+  const list = tabReports(now);
+  const n = nowPlayingReport();
+  if (n && !(BROWSER.test(n.app) && list.some((t) => sameTitle(t, n)))) list.push({ ...n, id: 'np', startedAt: npPlayingSince });
+  return list;
+}
+
+let pinned = null; // a source the person chose with the ⇄ button; held until it goes away
+let shownPausedAt = 0; // when what is on screen paused
+let sources = [];
+
+// Which source to follow when nobody picked one:
+//  - the most recently started of those playing;
+//  - when a music player and a plain video play together, the music player;
+//  - a song you just paused stays, unless something started after you paused it.
+function pickAuto(list, now) {
+  const shown = current && list.find((c) => c.id === current.id);
+  if (shown && !shown.playing) shownPausedAt = shownPausedAt || now;
+  else shownPausedAt = 0;
+  let playing = list.filter((c) => c.playing);
+  if (shown && !shown.playing) playing = playing.filter((c) => c.startedAt > shownPausedAt);
+  if (playing.length) {
+    const music = playing.filter(isMusicSource);
+    const pool = music.length ? music : playing;
+    return pool.sort((a, b) => b.startedAt - a.startedAt)[0];
+  }
+  if (shown) return shown;
+  return list.sort((a, b) => b.startedAt - a.startedAt)[0] || null;
+}
+
+function choose(now) {
+  const list = candidates(now);
+  sources = list;
+  let r = (pinned && list.find((c) => c.id === pinned)) || null;
+  if (!r) {
+    pinned = null;
+    r = pickAuto(list, now);
+  }
+  // A short clip under the song's title (YouTube pause ad, preview): keep the song, paused where it stopped.
+  if (r && r.source === 'nowplaying' && r.duration > 0 && r.duration < 30 && lastSong && lastSong.app === r.app && sameTitle(lastSong, r)) {
+    r = lastSong.playing ? { ...lastSong, elapsed: positionOf(lastSong, now), at: now, playing: false } : lastSong;
+  }
+  // No position from Now Playing: carry on from the last position we knew for this song (often where it paused).
+  if (r && r.source === 'nowplaying' && !npHasPosition() && lastSong && lastSong.app === r.app && sameTitle(lastSong, r)) {
+    r = r.playing === lastSong.playing ? lastSong : { ...lastSong, elapsed: positionOf(lastSong, now), at: now, playing: r.playing };
+  }
+  if (r && r.source === 'nowplaying' && !npHasPosition() && r !== lastSong) r = { ...r, noPosition: true };
+  if (r && r.duration >= 30 && !r.ad) lastSong = r;
+  // Now Playing empties for a moment when macOS switches players; ride that out.
+  if (!r) {
+    if (!emptySince) emptySince = now;
+    if (current && now - emptySince < 1500) return current;
+  } else {
+    emptySince = 0;
+  }
+  return r;
+}
+
+let song = { key: '', duration: null, since: 0 }; // the song the lyrics are for
+let lookupTimer = null;
+let shownArt = null;
+
+function publish(r) {
+  current = r;
+  const isAd = !!r && (r.ad || (r.duration > 0 && r.duration < 30));
+  const key = !r ? '' : isAd ? '~ad' : `${normalize(r.title)}|${normalize(r.artist)}`;
   send('np', {
     key,
-    app,
-    title: track ? track.title : '',
-    artist: track ? track.artist : '',
-    duration: track ? track.duration : 0,
-    elapsed: (state.elapsedTimeMicros || 0) / 1e6,
-    at: state.timestampEpochMicros ? state.timestampEpochMicros / 1000 : Date.now(),
-    rate: rate || 1,
-    playing: state.playing != null ? !!state.playing : rate > 0,
-    lead: leadFor(app),
+    source: r ? r.source : '',
+    app: r ? r.app : '',
+    title: r ? r.title : '',
+    artist: r ? r.artist : '',
+    duration: r ? r.duration : 0,
+    elapsed: r ? r.elapsed : 0,
+    at: r ? r.at : Date.now(),
+    rate: r ? r.rate : 1,
+    playing: !!(r && r.playing),
+    lead: r ? r.lead : 0,
+    noPosition: !!(r && r.noPosition),
+    music: !!(r && isMusicSource(r)),
+    sourceId: r ? r.id : '',
+    sources: sources.map((c) => ({ id: c.id, label: labelOf(c), playing: c.playing })),
+    npApp: npState.bundleIdentifier || '', // who macOS would send media keys to (for the e2e test's safety check)
   });
-  if ('artworkData' in diff || 'artworkMimeType' in diff) {
-    send('art', state.artworkData ? `data:${state.artworkMimeType || 'image/jpeg'};base64,${state.artworkData}` : '');
+  const art = r && r.art ? r.art : '';
+  if (art && art !== shownArt) {
+    shownArt = art;
+    send('art', art);
   }
 
-  if (key === trackKey) return;
-  trackKey = key;
-  clearTimeout(lookupTimer);
-  send('offset', { key, value: offsets.get(key) || 0 });
-  if (!track) return send('lyrics', { key, status: 'idle' });
-  // Adverts (YouTube) and short clips: wait for the song itself.
-  if (track.duration > 0 && track.duration < 30) return send('lyrics', { key, status: 'ad' });
-  send('lyrics', { key, status: 'loading' });
-  // Metadata can arrive in pieces; look up once it has settled.
-  lookupTimer = setTimeout(() => {
-    lyrics.lookup(track).then(
-      (result) => key === trackKey && send('lyrics', { ...result, key }),
-      () => key === trackKey && send('lyrics', { key, status: 'error' }),
-    );
-  }, 350);
+  if (key !== song.key) {
+    song = { key, duration: null, since: Date.now() };
+    clearTimeout(lookupTimer);
+    send('offset', { key, value: offsets.get(key) || 0 });
+    if (!r) return send('lyrics', { key, status: 'idle' });
+    if (isAd) return send('lyrics', { key, status: 'ad' });
+    send('lyrics', { key, status: 'loading' });
+  }
+  if (!r || isAd) return undefined;
+  // Look up once the length is known, because the length picks the right recording; stop waiting after 3s.
+  // A big change in length later (an advert ended, a different upload) is worth a second look.
+  const settled = r.duration >= 30 || Date.now() - song.since > 3000;
+  const changed = song.duration == null || (r.duration >= 30 && Math.abs(r.duration - song.duration) > 8);
+  if (settled && changed) {
+    song.duration = r.duration;
+    clearTimeout(lookupTimer);
+    const track = { title: r.title, artist: r.artist, album: r.album, duration: r.duration, alt: r.alt, tempo: r.tempo };
+    lookupTimer = setTimeout(() => {
+      lyrics.lookup(track).then(
+        (result) => key === song.key && send('lyrics', { ...result, key, version: 0 }),
+        () => key === song.key && send('lyrics', { key, status: 'error' }),
+      );
+    }, 250);
+  }
+  return undefined;
+}
+
+function update() {
+  publish(choose(Date.now()));
+}
+
+// Play/pause/next go to whoever the lyrics come from: an extension tab gets them on its next report (≤250ms),
+// anything else through macOS Now Playing.
+const tabCommands = new Map();
+function command(name) {
+  if (current && current.source === 'extension' && current.tabId != null) {
+    tabCommands.set(current.tabId, [...(tabCommands.get(current.tabId) || []), name]);
+    return Promise.resolve();
+  }
+  return np.send(name);
+}
+
+// The extension posts each tab's player state here. Only Chrome extensions can: websites cannot add the custom
+// header without a CORS preflight, which this server never approves.
+const BRIDGE_PORT = Number(process.env.FL_BRIDGE_PORT) || 47231; // the e2e test uses its own
+function startBridge() {
+  const server = http.createServer((req, res) => {
+    const origin = req.headers.origin || '';
+    const allowed = req.headers['x-floatlyrics'] === '1' && (!origin || origin.startsWith('chrome-extension://'));
+    if (req.method !== 'POST' || req.url !== '/state' || !allowed) {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > 64 * 1024) req.destroy();
+    });
+    req.on('end', () => {
+      try {
+        const msg = JSON.parse(body);
+        if (msg.closed) tabs.delete(msg.tabId);
+        else {
+          const prev = tabs.get(msg.tabId);
+          const st = msg.state || {};
+          // When this tab started playing what it plays now, to tell which of several players is the newest.
+          const restarted = !st.paused && (!prev || prev.paused || prev.title !== st.title);
+          const startedAt = restarted ? Date.now() : (prev && prev.startedAt) || 0;
+          tabs.set(msg.tabId, { ...st, tabId: msg.tabId, startedAt, receivedAt: Date.now() });
+        }
+        update();
+        const commands = tabCommands.get(msg.tabId);
+        tabCommands.delete(msg.tabId);
+        if (commands && commands.length) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ commands }));
+          return;
+        }
+        res.writeHead(204);
+      } catch (err) {
+        res.writeHead(400);
+      }
+      res.end();
+    });
+  });
+  server.on('error', (err) => {
+    console.warn('[FloatLyrics] extension bridge unavailable:', err.message);
+    // Usually a FloatLyrics that is still quitting; try again shortly.
+    if (err.code === 'EADDRINUSE') setTimeout(() => server.listen(BRIDGE_PORT, '127.0.0.1'), 3000);
+  });
+  server.listen(BRIDGE_PORT, '127.0.0.1');
 }
 
 /* ---------- appearance settings ---------- */
@@ -105,6 +345,7 @@ function setSettings(next) {
   send('settings', settings);
   if (win && !win.isDestroyed()) win.setAlwaysOnTop(settings.onTop, 'floating');
   if (!settings.island && islandActive) restoreFromIsland();
+  placeIsland();
   return settings;
 }
 
@@ -132,8 +373,10 @@ function openSettings() {
   settingsWin.setAlwaysOnTop(true, 'floating');
   settingsWin.webContents.on('did-finish-load', () => {
     settingsWin.webContents.send('settings', settings);
+    if (TEST) return hideForTest(settingsWin) || settingsWin.showInactive();
     settingsWin.show();
     app.focus({ steal: true });
+    return undefined;
   });
   settingsWin.on('closed', () => {
     settingsWin = null;
@@ -190,6 +433,7 @@ function createWindow() {
     maximizable: false,
     fullscreenable: false,
     alwaysOnTop: true,
+    acceptFirstMouse: true, // it floats over the app you are using: the first click must hit the button, not just focus
     show: false,
     title: 'FloatLyrics',
     // A floating widget must keep animating while other apps have focus.
@@ -211,8 +455,12 @@ function createWindow() {
   win.webContents.on('did-finish-load', () => {
     if (!last.glass) applyGlass();
     replay(win);
+    hideForTest(win);
     win.showInactive();
   });
+  // A double-click on the title must not zoom the window to fill the screen.
+  win.on('maximize', () => win.unmaximize());
+  win.on('enter-full-screen', () => win.setFullScreen(false));
   // The system minimise (yellow button, Window menu) also hands over to the island.
   win.on('minimize', () => settings.island && setIslandActive(true));
   win.on('restore', () => setIslandActive(false));
@@ -243,11 +491,18 @@ function notch() {
 }
 
 // The island lives on the built-in display when it has a notch, otherwise as a floating pill on the main display.
+// Where the island goes: around the notch, or (setting "Window's screen") at the top of the screen the window is
+// on, as a floating pill when that screen has no notch. FL_ISLAND_PILL forces the pill (tests, screenshots).
 function islandPlace() {
-  const n = notch();
+  const n = process.env.FL_ISLAND_PILL ? null : notch();
   const internal = screen.getAllDisplays().find((d) => d.internal && (!n || Math.abs(d.bounds.width - n.screenWidth) < 2));
+  if (settings.islandScreen === 'window' && win && !win.isDestroyed()) {
+    const d = screen.getDisplayMatching(windowBounds || win.getBounds());
+    return { display: d, notch: n && internal && d.id === internal.id ? n : null };
+  }
   return n && internal ? { display: internal, notch: n } : { display: screen.getPrimaryDisplay(), notch: null };
 }
+let windowBounds = null; // where the window was when it last went into the island
 
 const ISLAND_W = 640;
 const ISLAND_H = 240;
@@ -277,6 +532,7 @@ function createIsland() {
     focusable: false,
     skipTaskbar: true,
     enableLargerThanScreen: true,
+    acceptFirstMouse: true,
     type: 'panel',
     show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true, backgroundThrottling: false },
@@ -288,6 +544,7 @@ function createIsland() {
   island.webContents.on('did-finish-load', () => {
     replay(island);
     placeIsland();
+    hideForTest(island);
     island.showInactive();
   });
   island.on('closed', () => {
@@ -307,10 +564,12 @@ let animating = false; // window bounds are mid-animation; do not save them
 function minimizeToIsland() {
   if (!win || !win.isVisible() || animating) return;
   if (!settings.island) return win.minimize();
+  windowBounds = win.getBounds();
+  placeIsland(); // the island may live on another screen than last time
   const { display, notch: n } = islandPlace();
   const b = display.bounds;
   const w = n ? Math.round(n.width) : 200;
-  const h = n ? Math.round(n.height) : 34;
+  const h = n ? Math.round(n.height) : 40;
   const saved = win.getBounds();
   animating = true;
   win.setMinimumSize(1, 1);
@@ -335,7 +594,7 @@ function restoreFromIsland() {
   const { display, notch: n } = islandPlace();
   const b = display.bounds;
   const w = n ? Math.round(n.width) : 200;
-  const h = n ? Math.round(n.height) : 34;
+  const h = n ? Math.round(n.height) : 40;
   const target = win.getBounds();
   animating = true;
   win.setMinimumSize(1, 1);
@@ -351,22 +610,66 @@ function restoreFromIsland() {
 
 app.setName('FloatLyrics');
 
+// One FloatLyrics at a time: opening it again brings the window back.
+if (!app.requestSingleInstanceLock()) app.quit();
+app.on('second-instance', () => restoreFromIsland());
+
 app.whenReady().then(() => {
+  // The packaged app gets its icon from the bundle; `npm start` borrows Electron's, so set ours.
+  // Test runs stay out of the Dock so they are not mistaken for the real app.
+  if (!app.isPackaged && app.dock) {
+    if (process.env.FL_TEST) app.dock.hide();
+    else app.dock.setIcon(path.join(__dirname, 'assets', 'icon.png'));
+  }
   lyrics = createLyrics(path.join(app.getPath('userData'), 'lyrics-cache.json'));
   loadSettings();
   send('settings', settings);
-  ipcMain.handle('command', (_event, name) => np.send(name));
+  ipcMain.handle('command', (_event, name) => command(name));
   ipcMain.handle('settings:set', (_event, patch) => setSettings({ ...settings, ...patch }));
   ipcMain.handle('settings:reset', () => setSettings(looks.DEFAULTS));
   ipcMain.on('settings:open', openSettings);
   ipcMain.on('close', () => app.quit());
+  // Moving the window by its title (view.js reports press and release). The window follows the real cursor,
+  // read from macOS ~120 times a second; positions reported by the page lag behind a moving window.
+  let moving = null;
+  const stopMoving = () => {
+    if (moving) clearInterval(moving.timer);
+    moving = null;
+  };
+  ipcMain.on('move:start', () => {
+    if (!win) return;
+    stopMoving();
+    const from = screen.getCursorScreenPoint();
+    const [x, y] = win.getPosition();
+    moving = {
+      timer: setInterval(() => {
+        const p = screen.getCursorScreenPoint();
+        if (win && !win.isDestroyed()) win.setPosition(x + p.x - from.x, y + p.y - from.y);
+      }, 8),
+    };
+  });
+  ipcMain.on('move:end', stopMoving);
   ipcMain.on('window:minimize', minimizeToIsland);
   ipcMain.on('window:restore', restoreFromIsland);
-  ipcMain.on('island:hover', (_event, inside) => island && island.setIgnoreMouseEvents(!inside, { forward: true }));
+  ipcMain.on('island:hover', (_event, inside) => island && !TEST && island.setIgnoreMouseEvents(!inside, { forward: true }));
   ipcMain.on('nudge', (_event, delta) => {
-    const value = Math.round(((offsets.get(trackKey) || 0) + Number(delta || 0)) * 10) / 10;
-    offsets.set(trackKey, value);
-    send('offset', { key: trackKey, value });
+    const value = Math.round(((offsets.get(song.key) || 0) + Number(delta || 0)) * 10) / 10;
+    offsets.set(song.key, value);
+    send('offset', { key: song.key, value });
+  });
+  // ⇄: follow the next source instead (when several are open or playing).
+  ipcMain.on('source:next', () => {
+    if (sources.length < 2) return;
+    const i = sources.findIndex((c) => current && c.id === current.id);
+    pinned = sources[(i + 1) % sources.length].id;
+    update();
+  });
+  // "Try another version": the window picks; both windows show it.
+  ipcMain.on('lyrics:version', (_event, index) => {
+    const l = last.lyrics;
+    if (!l || !l.versions || l.key !== song.key) return;
+    const i = ((Number(index) % l.versions.length) + l.versions.length) % l.versions.length;
+    send('lyrics', { ...l, ...l.versions[i], status: 'synced', version: i });
   });
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
@@ -394,7 +697,31 @@ app.whenReady().then(() => {
       },
     ]),
   );
-  np.on('change', onNowPlaying);
+  np.on('change', (state, diff) => {
+    const playing = state.playing != null ? !!state.playing : (state.playbackRate || 0) > 0;
+    if (!playing) npPlayingSince = 0;
+    else if (!npPlayingSince || state.title !== npState.title) npPlayingSince = Date.now();
+    npState = state;
+    if ('artworkData' in diff || 'artworkMimeType' in diff) {
+      npArt = state.artworkData ? `data:${state.artworkMimeType || 'image/jpeg'};base64,${state.artworkData}` : '';
+    }
+    update();
+  });
+  startBridge();
+  setInterval(update, 1000); // expire silent tabs, finish waiting lookups
+  // Hover, from the system cursor: the window is a drag area, and on macOS a drag area hides mouse moves from the
+  // page, so CSS :hover alone would flicker the controls away as you reach for them.
+  let hovering = false;
+  setInterval(() => {
+    if (!win || win.isDestroyed() || !win.isVisible()) return;
+    const p = screen.getCursorScreenPoint();
+    const b = win.getBounds();
+    const inside = p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
+    if (inside !== hovering) {
+      hovering = inside;
+      win.webContents.send('hover', inside);
+    }
+  }, 60);
   np.on('log', (line) => line && console.log('[now-playing]', line));
   np.start();
   createWindow();

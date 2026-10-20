@@ -166,8 +166,46 @@
 
   /* ---------- track changes ---------- */
 
+  // The FloatLyrics desktop app, when it is running, takes this tab's exact state (sent on by background.js).
+  function forwardToApp(state) {
+    if (!state.hasPosition && !state.ad) return;
+    const msg = {
+      type: 'fl:state',
+      state: {
+        site: state.site,
+        title: state.title,
+        artist: state.artist,
+        album: state.album,
+        alt: state.alt,
+        tempo: state.tempo,
+        duration: state.duration,
+        position: state.position,
+        at: Date.now() - (performance.now() - state.at), // the probe's clock is performance.now()
+        paused: state.paused,
+        rate: state.rate,
+        ad: !!state.ad,
+        artwork: state.artwork,
+      },
+    };
+    try {
+      chrome.runtime
+        .sendMessage(msg)
+        .then((res) => setAppConnected(!!(res && res.app)))
+        .catch(() => {});
+    } catch (err) {} // extension reloaded: this tab's script is orphaned until the page reloads
+  }
+
+  // While the FloatLyrics app is running it shows the lyrics, so the page's own button steps aside.
+  let appConnected = false;
+  function setAppConnected(on) {
+    if (on === appConnected) return;
+    appConnected = on;
+    placeLauncher();
+  }
+
   function onState(state) {
     if (state.site === 'youtube' && state.title) Object.assign(state, videoTrack(state.title, state.artist));
+    forwardToApp(state);
     player = state;
     showArt(); // the cover can land after the lyrics do
     const now = performance.now();
@@ -481,9 +519,13 @@
   // youtube.com is mostly not music: only offer the button while a video is open.
   function placeLauncher() {
     if (!launcher) return;
-    const hide = location.hostname === 'www.youtube.com' && !ui && !(player && player.title);
+    const hide = !ui && (appConnected || (location.hostname === 'www.youtube.com' && !(player && player.title)));
     launcher.style.display = hide ? 'none' : '';
   }
+
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg && msg.type === 'fl:command') document.dispatchEvent(new CustomEvent('floatlyrics:command', { detail: String(msg.name) }));
+  });
 
   document.addEventListener('floatlyrics:state', (e) => {
     try {

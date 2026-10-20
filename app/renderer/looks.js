@@ -26,8 +26,10 @@
     cover: ['None', 'Subtle', 'Default', 'Rich', 'Richest'],
   };
 
-  // island: minimising the window hands the lyrics to a Dynamic Island around the MacBook notch.
-  const DEFAULTS = { theme: 'cover', textSize: 1, clarity: 2, cover: 2, focus: true, align: 'center', onTop: true, island: true };
+  // island: minimising the window hands the lyrics to a Dynamic Island.
+  // islandScreen: 'notch' puts it around the MacBook notch; 'window' on whichever screen the window was on
+  // (a floating pill on screens without a notch).
+  const DEFAULTS = { theme: 'cover', textSize: 1, clarity: 2, cover: 2, focus: true, align: 'center', onTop: true, island: true, islandScreen: 'notch' };
 
   // Whatever comes in, what goes out is a valid, complete settings object.
   function sanitize(input) {
@@ -42,6 +44,7 @@
     out.align = s.align === 'left' ? 'left' : 'center';
     out.onTop = s.onTop !== false;
     out.island = s.island !== false;
+    out.islandScreen = s.islandScreen === 'window' ? 'window' : 'notch';
     return out;
   }
 

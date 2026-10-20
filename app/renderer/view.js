@@ -13,6 +13,7 @@
     idle: 'Play a song anywhere on your Mac',
     loading: 'Finding lyrics…',
     none: 'No lyrics found for this track',
+    notSong: "No lyrics — this doesn't look like a song",
     ad: 'Waiting for the song…',
     instrumental: '♪ Instrumental',
     error: 'Could not reach the lyrics service',
@@ -58,7 +59,8 @@
     el.root.classList.toggle('is-plain', lyrics.status === 'plain');
     el.lines.hidden = !hasLines;
     el.msg.hidden = hasLines;
-    el.msg.textContent = MESSAGES[lyrics.status] || '';
+    const notSong = lyrics.status === 'none' && np && !np.music;
+    el.msg.textContent = MESSAGES[notSong ? 'notSong' : lyrics.status] || '';
     nodes = [];
     active = -2;
     el.lines.replaceChildren();
@@ -79,13 +81,33 @@
 
   function renderSync() {
     el.sync.textContent = `${offset > 0 ? '+' : ''}${offset.toFixed(1)}s`;
+    // Several recordings matched (live, acoustic…): let the person step through them.
+    const versions = lyrics.versions || [];
+    const v = $('version');
+    v.hidden = versions.length < 2;
+    if (versions.length > 1) {
+      const n = (lyrics.version || 0) + 1;
+      const src = versions[lyrics.version || 0].source;
+      v.textContent = `${n}/${versions.length}`;
+      v.title = `Lyrics version ${n} of ${versions.length} (${src.album || src.title}, ${Math.round(src.duration)}s). Click to try another.`;
+    }
     for (const l of lenses) l.update();
   }
 
+  // The active line glides to the middle on a spring (Motion), not the browser's stock smooth scroll.
+  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const SCROLL = { type: 'spring', stiffness: 150, damping: 26, mass: 1 }; // critically damped: no wobble under the words
+  let scrolling = null;
   function center(smooth) {
     const cur = nodes[active];
     const top = cur ? cur.offsetTop + cur.offsetHeight / 2 - el.lines.clientHeight / 2 : 0;
-    el.lines.scrollTo({ top, behavior: smooth ? 'smooth' : 'auto' });
+    if (scrolling) scrolling.stop();
+    scrolling = null;
+    if (!smooth || reduceMotion || !window.Motion) {
+      el.lines.scrollTop = top;
+      return;
+    }
+    scrolling = window.Motion.animate(el.lines.scrollTop, top, { ...SCROLL, onUpdate: (v) => (el.lines.scrollTop = v) });
   }
 
   function tick() {
@@ -141,6 +163,7 @@
       status: lyrics.status,
       track: np && np.title ? `${np.title} — ${np.artist}` : '',
       app: np ? np.app : '',
+      npApp: np ? np.npApp || '' : '',
       playing: np && np.playing ? '1' : '0',
       match: lyrics.source ? `${lyrics.source.title} — ${lyrics.source.artist} (${lyrics.source.duration}s)` : '',
       line: String(i),
@@ -188,6 +211,20 @@
   }
 
   // The main process keeps the nudge per track and shares it with the island.
+  // ⇄ appears when more than one player is open or playing; it says who is followed and steps to the next.
+  function renderSources() {
+    const b = $('source');
+    const list = (np && np.sources) || [];
+    document.body.dataset.sources = String(list.length);
+    document.body.dataset.sourceNames = list.map((x) => x.label).join('|');
+    b.hidden = list.length < 2;
+    if (list.length < 2) return;
+    const i = Math.max(0, list.findIndex((x) => x.id === np.sourceId));
+    const next = list[(i + 1) % list.length];
+    b.textContent = `⇄ ${list.length}`;
+    b.title = `Following ${list[i].label}${list[i].playing ? '' : ' (paused)'}. Click to follow ${next.label}${next.playing ? '' : ' (paused)'}.`;
+  }
+
   function nudge(delta) {
     api.nudge(delta);
   }
@@ -204,8 +241,15 @@
 
   api.on('np', (report) => {
     np = report;
+    renderSources();
+    $('note').hidden = !(np.noPosition && np.playing && lyrics.status === 'synced');
     renderHead();
-    document.body.dataset.playing = np.playing ? '1' : '0';
+    Object.assign(document.body.dataset, {
+      playing: np.playing ? '1' : '0',
+      app: np.app || '',
+      npApp: np.npApp || '',
+      track: np.title ? `${np.title} — ${np.artist}` : '',
+    });
   });
   api.on('lyrics', (result) => {
     lyrics = result;
@@ -218,6 +262,13 @@
   });
   api.on('art', showArt);
   api.on('settings', applySettings);
+  // Controls show while the pointer is over the window, and linger a moment after it leaves.
+  let hoverTimer = null;
+  api.on('hover', (inside) => {
+    clearTimeout(hoverTimer);
+    if (inside) el.root.classList.add('is-hover');
+    else hoverTimer = setTimeout(() => el.root.classList.remove('is-hover'), 900);
+  });
   api.on('glass', (mode) => {
     el.root.classList.add(`glass-${mode}`);
     document.body.dataset.glass = mode;
@@ -230,6 +281,8 @@
   $('later').addEventListener('click', () => nudge(-0.5));
   $('close').addEventListener('click', () => api.close());
   $('min').addEventListener('click', () => api.minimize());
+  $('version').addEventListener('click', () => api.chooseVersion((lyrics.version || 0) + 1));
+  $('source').addEventListener('click', () => api.nextSource());
   $('look').addEventListener('click', (e) => {
     e.stopPropagation();
     togglePop();
@@ -261,6 +314,28 @@
     for (const l of lenses) l.update();
     center(false);
   });
+
+  // Moving the window by its title or cover, done here rather than with a macOS drag area (-webkit-app-region),
+  // which with a real mouse made the whole window a drag handle and swallowed every click.
+  let moving = false;
+  for (const handle of [el.thumb, document.querySelector('.fl-meta')]) {
+    handle.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      moving = true;
+      handle.setPointerCapture(e.pointerId);
+      el.root.classList.add('is-moving');
+      api.moveStart();
+    });
+    const stop = () => {
+      if (!moving) return;
+      moving = false;
+      el.root.classList.remove('is-moving');
+      api.moveEnd();
+    };
+    handle.addEventListener('pointerup', stop);
+    handle.addEventListener('pointercancel', stop);
+    window.addEventListener('blur', stop); // never leave the window glued to the cursor
+  }
 
   // Read-only hooks for DevTools and the e2e test.
   window.__floatlyrics = { position, nowPlaying: () => np };

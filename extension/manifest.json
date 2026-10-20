@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
   "name": "FloatLyrics",
-  "version": "0.3.0",
-  "description": "Time-synced lyrics in a small always-on-top window for YouTube, YouTube Music, Spotify and Apple Music web players.",
+  "version": "0.5.2",
+  "description": "Helper for the FloatLyrics app: gives it the exact playback position of YouTube, YouTube Music, Spotify and Apple Music in the browser. On its own it shows lyrics in a floating window.",
   "minimum_chrome_version": "116",
   "permissions": ["storage"],
-  "host_permissions": ["https://lrclib.net/*"],
+  "host_permissions": ["https://lrclib.net/*", "http://127.0.0.1/*"],
   "background": {
     "service_worker": "background.js"
   },

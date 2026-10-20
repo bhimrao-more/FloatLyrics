@@ -2,10 +2,15 @@
 // (no login needed) and checks that synced lyrics load, follow playback, and render in the floating window.
 //   npm run test:e2e            FL_URL=<watch url> and FL_SHOT=<png path> are optional
 import puppeteer from 'puppeteer';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const EXT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../extension');
+// A copy of the extension pointed at an unused app port, so it never feeds a FloatLyrics app you have open.
+const EXT = fs.mkdtempSync(path.join(os.tmpdir(), 'floatlyrics-ext-'));
+fs.cpSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../extension'), EXT, { recursive: true });
+fs.writeFileSync(path.join(EXT, 'background.js'), fs.readFileSync(path.join(EXT, 'background.js'), 'utf8').replace('127.0.0.1:47231', '127.0.0.1:47297'));
 const URL = process.env.FL_URL || 'https://music.youtube.com/watch?v=dQw4w9WgXcQ';
 const SHOT = process.env.FL_SHOT || '';
 const TOLERANCE = 0.45; // seconds; the view re-checks the line 5x a second

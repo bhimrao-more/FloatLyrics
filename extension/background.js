@@ -13,12 +13,18 @@ const HEADERS = { 'X-User-Agent': `FloatLyrics/${chrome.runtime.getManifest().ve
 
 const inflight = new Map();
 
-async function fetchJson(url) {
+async function fetchJson(url, retried) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 12000);
   try {
     const res = await fetch(url, { headers: HEADERS, signal: ctl.signal });
     if (res.status === 404) return null;
+    // LRCLIB rate-limits bursts and says when to come back; wait that long (at most 5s) and try once more.
+    if (res.status === 429 && !retried) {
+      const wait = Math.min(5, Number(res.headers.get('retry-after')) || 1);
+      await new Promise((r) => setTimeout(r, wait * 1000));
+      return fetchJson(url, true);
+    }
     if (!res.ok) throw new Error(`LRCLIB responded ${res.status}`);
     return await res.json();
   } finally {
@@ -57,6 +63,42 @@ async function lookup(track) {
   }
   return inflight.get(key);
 }
+
+/* ---------- FloatLyrics desktop app ----------
+ * When the app is running it listens on 127.0.0.1. Each tab's exact player state goes there; the reply can carry
+ * play/pause/next commands for that tab.
+ */
+const APP_URL = 'http://127.0.0.1:47231/state';
+let appAbsentUntil = 0;
+
+// Resolves true when the app took the report.
+async function toApp(body) {
+  if (Date.now() < appAbsentUntil) return false;
+  try {
+    const res = await fetch(APP_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-FloatLyrics': '1' },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 200 && body.tabId != null) {
+      const { commands } = await res.json();
+      for (const name of commands || []) chrome.tabs.sendMessage(body.tabId, { type: 'fl:command', name }).catch(() => {});
+    }
+    return res.ok;
+  } catch (err) {
+    appAbsentUntil = Date.now() + 2000; // not running; look again shortly
+    return false;
+  }
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => toApp({ tabId, closed: true }));
+
+// The tab learns whether the app is there, so it can step aside and let the app show the lyrics.
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== 'fl:state' || !sender.tab) return undefined;
+  toApp({ tabId: sender.tab.id, state: msg.state }).then((app) => sendResponse({ app }));
+  return true;
+});
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.type !== 'fl:lyrics') return undefined;

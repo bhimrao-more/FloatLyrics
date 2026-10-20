@@ -1,18 +1,14 @@
 /*
- * The Dynamic Island around the MacBook notch. Pure black so it reads as the notch growing; sizes are set by
- * island.js as --w / --h / --r and animate on a spring (--spring, generated in island.js).
+ * The Dynamic Island around the MacBook notch. Pure black so it reads as the notch growing. Its outline and the
+ * lyric reel move on Motion springs (island.js); the rows' own fades use a long ease-out, Apple's curve for
+ * things arriving (--ease-out).
  */
 :root {
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", "Noto Sans Devanagari", sans-serif;
-  --w: 200px;
-  --h: 37px;
-  --r: 10px;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, "Noto Sans", "Noto Sans Devanagari", sans-serif;
   --nh: 37px; /* height of the notch row */
-  --lyric-h: 0px;
   --accent: #fff; /* from the cover */
   --text-scale: 1;
-  --spring: ease;
-  --spring-soft: ease;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 }
 html,
 body {
@@ -22,6 +18,7 @@ body {
   background: transparent;
   font-family: var(--font);
   -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
   user-select: none;
   cursor: default;
 }
@@ -30,11 +27,11 @@ body {
   position: absolute;
   top: 0;
   left: 50%;
-  width: var(--w);
-  height: var(--h);
+  width: 200px; /* island.js springs the size from here */
+  height: 37px;
   translate: -50% 0;
   color: #fff;
-  transition: width 0.6s var(--spring), height 0.6s var(--spring), opacity 0.25s ease;
+  transition: opacity 0.3s var(--ease-out);
 }
 .island[data-state="hidden"] {
   opacity: 0;
@@ -44,8 +41,7 @@ body {
   inset: 0;
   overflow: hidden;
   background: #000;
-  border-radius: 0 0 var(--r) var(--r);
-  transition: border-radius 0.6s var(--spring);
+  border-radius: 0 0 10px 10px;
 }
 /* The notch's own concave top corners, carried along as the island widens. */
 .island.notched::before,
@@ -69,7 +65,6 @@ body {
   top: 6px;
 }
 .island.floating .shell {
-  border-radius: var(--r);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
@@ -84,8 +79,7 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 0 13px;
-  opacity: 1;
-  transition: opacity 0.25s ease 0.08s;
+  transition: opacity 0.3s var(--ease-out) 0.08s;
 }
 .island[data-state="idle"] .top,
 .island[data-state="hidden"] .top {
@@ -99,7 +93,7 @@ body {
   object-fit: cover;
   background: #222;
   cursor: pointer;
-  transition: transform 0.6s var(--spring);
+  transition: transform 0.5s var(--ease-out);
 }
 .art:not([src]) {
   visibility: hidden;
@@ -133,18 +127,32 @@ body {
   to { transform: scaleY(1); }
 }
 
-/* The current lyric: each new line rises in from below with a blur, the old one leaves upward. */
+/* The lyric reel: a column of every line, slid upward on a spring so the line being sung sits at the top. */
 .lyric {
   position: absolute;
   top: var(--nh);
   left: 0;
   right: 0;
-  height: var(--lyric-h);
+  bottom: 0;
+  overflow: hidden;
+  /* soft edges: lines leave upward and arrive from below without hard cuts */
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 8px, #000 calc(100% - 6px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 8px, #000 calc(100% - 6px), transparent 100%);
 }
-.line,
+.island[data-state="expanded"] .lyric {
+  bottom: 48px;
+}
+.reel {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  will-change: transform;
+}
+.row,
 .measure {
-  font: 600 calc(15px * var(--text-scale)) / 1.25 var(--font);
-  letter-spacing: -0.005em;
+  margin: 0;
+  font: 650 calc(16px * var(--text-scale)) / 1.24 var(--font);
+  letter-spacing: -0.014em;
   text-align: center;
   text-wrap: balance;
   display: -webkit-box;
@@ -152,24 +160,70 @@ body {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.line {
-  position: absolute;
-  left: 22px;
-  right: 22px;
-  top: 50%;
-  translate: 0 -50%;
+.row {
+  padding-bottom: 4px;
   color: #fff;
-  transition: opacity 0.3s ease, transform 0.55s var(--spring-soft), filter 0.3s ease;
-}
-.line.in {
   opacity: 0;
-  transform: translateY(14px) scale(0.97);
-  filter: blur(6px);
+  transform: scale(0.84);
+  transform-origin: 50% 0;
+  filter: blur(3px);
+  transition: opacity 0.45s var(--ease-out), transform 0.6s var(--ease-out), filter 0.45s var(--ease-out);
 }
-.line.out {
+.row.is-now {
+  opacity: 1;
+  transform: none;
+  filter: none;
+}
+.row.is-soon {
+  opacity: 0.46;
+  transform: scale(0.94);
+  filter: none;
+}
+.row.is-next {
+  opacity: 0.34;
+  transform: scale(0.84);
+  filter: none;
+  -webkit-line-clamp: 1;
+}
+.row.is-past {
   opacity: 0;
-  transform: translateY(-14px) scale(0.97);
-  filter: blur(6px);
+  transform: scale(0.92);
+  filter: blur(5px);
+}
+/* The pill (screens without a notch): one row, cover · lyric · equaliser; the lyric scrolls up inside the row. */
+.island.floating .lyric {
+  top: 0;
+  bottom: auto;
+  left: 46px;
+  right: 42px;
+  height: var(--nh);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 7px, #000 calc(100% - 7px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 7px, #000 calc(100% - 7px), transparent 100%);
+}
+.island.floating .reel {
+  top: 0;
+}
+.island.floating .top {
+  padding: 0 9px;
+}
+.island.floating .art {
+  width: 26px;
+  height: 26px;
+  border-radius: 13px; /* round, concentric with the pill */
+}
+.pill .row,
+.pill .measure {
+  font-size: calc(15px * var(--text-scale));
+}
+.island.floating .row {
+  padding-bottom: 0;
+}
+.island.floating .row.is-next {
+  opacity: 0;
+}
+.island.floating .row.is-soon {
+  transform: none;
+  opacity: 0.5;
 }
 .measure {
   position: absolute;
@@ -192,13 +246,15 @@ body {
   gap: 12px;
   padding: 0 12px 6px 16px;
   opacity: 0;
+  transform: translateY(6px);
   pointer-events: none;
-  transition: opacity 0.15s ease;
+  transition: opacity 0.15s ease, transform 0.15s ease;
 }
 .island[data-state="expanded"] .more {
   opacity: 1;
+  transform: none;
   pointer-events: auto;
-  transition: opacity 0.25s ease 0.15s;
+  transition: opacity 0.35s var(--ease-out) 0.12s, transform 0.5s var(--ease-out) 0.12s;
 }
 .meta {
   min-width: 0;
@@ -236,13 +292,13 @@ body {
   background: transparent;
   color: #fff;
   cursor: pointer;
-  transition: background 0.15s ease, transform 0.15s ease;
+  transition: background 0.15s ease, transform 0.2s var(--ease-out);
 }
 .controls button:hover {
   background: rgba(255, 255, 255, 0.14);
 }
 .controls button:active {
-  transform: scale(0.9);
+  transform: scale(0.88);
 }
 .controls svg {
   width: 15px;
@@ -275,9 +331,9 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .island,
-  .shell,
-  .line {
+  .row,
+  .more,
+  .top {
     transition-duration: 0.01s;
   }
   .bars i {

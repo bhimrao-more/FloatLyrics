@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: https:; style-src 'self'; script-src 'self'" />
     <title>FloatLyrics</title>
     <link rel="stylesheet" href="style.css" />
   </head>
@@ -10,6 +10,8 @@
     <div class="fl" id="fl">
       <div class="fl-bg" id="bg"></div>
       <div class="fl-dim"></div>
+
+      <div class="fl-note" id="note" hidden>This player isn't sharing its position, so timing may be off. In Chrome, reload the FloatLyrics helper extension.</div>
 
       <div class="fl-body">
         <div class="fl-lines" id="lines"></div>
@@ -46,6 +48,8 @@
           <button class="fl-btn" id="earlier" type="button" title="Show lyrics 0.5s earlier">Earlier</button>
           <span class="fl-sync" id="sync"></span>
           <button class="fl-btn" id="later" type="button" title="Show lyrics 0.5s later">Later</button>
+          <button class="fl-btn fl-version" id="version" type="button" hidden></button>
+          <button class="fl-btn fl-source" id="source" type="button" hidden></button>
         </span>
       </footer>
 
@@ -67,6 +71,7 @@
 
     <script src="../../extension/core.js"></script>
     <script src="../../extension/glass.js"></script>
+    <script src="../../node_modules/motion/dist/motion.js"></script>
     <script src="looks.js"></script>
     <script src="view.js"></script>
   </body>

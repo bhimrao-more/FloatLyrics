@@ -11,9 +11,15 @@ const MISS_TTL = 6 * 3600 * 1000; // LRCLIB is crowd-sourced; a miss today may b
 const MAX_ENTRIES = 600;
 const HEADERS = { 'User-Agent': `FloatLyrics/${version} (https://github.com/bhimrao-more/FloatLyrics)` };
 
-async function fetchJson(url) {
+async function fetchJson(url, retried) {
   const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(12000) });
   if (res.status === 404) return null;
+  // LRCLIB rate-limits bursts and says when to come back; wait that long (at most 5s) and try once more.
+  if (res.status === 429 && !retried) {
+    const wait = Math.min(5, Number(res.headers.get('retry-after')) || 1);
+    await new Promise((r) => setTimeout(r, wait * 1000));
+    return fetchJson(url, true);
+  }
   if (!res.ok) throw new Error(`LRCLIB responded ${res.status}`);
   return res.json();
 }

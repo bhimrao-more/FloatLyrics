@@ -3,9 +3,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { cleanTitle, primaryArtist, videoTrack, parseLrc, indexAt, findLyrics } = require('../extension/core.js');
 
-async function fetchJson(url) {
+async function fetchJson(url, retried) {
   const res = await fetch(url, { headers: { 'X-User-Agent': 'FloatLyrics tests' } });
   if (res.status === 404) return null;
+  if (res.status === 429 && !retried) {
+    await new Promise((r) => setTimeout(r, Math.min(5, Number(res.headers.get('retry-after')) || 1) * 1000));
+    return fetchJson(url, true);
+  }
   if (!res.ok) throw new Error(`LRCLIB responded ${res.status}`);
   return res.json();
 }
