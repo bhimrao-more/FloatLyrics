@@ -1,95 +1,111 @@
 # FloatLyrics
 
-Time-synced lyrics in a small always-on-top window, for the song playing in your browser.
+Time-synced lyrics in a small, see-through, always-on-top glass window for whatever is playing on your Mac:
+YouTube, YouTube Music, Spotify or Apple Music, in the browser or in their own apps. It includes play, pause and
+next controls. Minimise it and the lyrics carry on in a Dynamic Island around the MacBook notch.
 Free and open source (MIT). No account, no API key, no tracking.
 
-Works on **YouTube** and the web players of **YouTube Music**, **Spotify** and **Apple Music** in Chrome or Edge 116+.
+## Run it (macOS)
+
+```sh
+git clone https://github.com/bhimrao-more/FloatLyrics.git
+cd FloatLyrics
+npm install
+npm start
+```
+
+Play a song anywhere. The window sits bottom-right, above every other window, on every Space and over
+full-screen apps.
+
+- **Move it:** drag anywhere. **Resize it:** drag an edge; the lyrics scale with the window.
+- **Controls:** hover for ⏮ ⏯ ⏭ and **Earlier / Later** (nudge the timing in 0.5s steps). With the window focused,
+  Space plays or pauses and ← / → skip.
+- **Look:** the sliders icon at the top opens five themes (Cover, Clear, Tinted, Graphite, Light) and text size.
+  **Advanced…** (or ⌘,) opens Settings for glass clarity, cover colour, alignment, line softening and
+  keep-on-top. Every option stays within the design; **Restore Defaults** brings back the original look.
+- **Minimise into the notch:** the – at the top, or ⌘M. The window shrinks into the notch and a Dynamic Island
+  takes over: the current line springs out below the notch, line by line. Hover it for the title, ⏮ ⏯ ⏭ and
+  Open. Click the cover, Open or the Dock icon to bring the window back. Turn this off in Settings to minimise
+  to the Dock instead. Without a notch, the island floats at the top of the main display.
+- **Close:** the × at the top, or ⌘Q.
+
+Native Liquid Glass needs macOS 26 or later. Older versions get a frosted window instead.
 
 ## Status
 
-| Player | Track detection | Synced lyrics |
-| --- | --- | --- |
-| YouTube (`www.youtube.com`, watch pages) | Tested end to end | Tested end to end (`FL_URL=<youtube watch url> npm run test:e2e`) |
-| YouTube Music (`music.youtube.com`) | Tested end to end | Tested end to end (`npm run test:e2e`) |
-| Apple Music (`music.apple.com`) | Tested (signed out) | Not yet tested with a signed-in account |
-| Spotify (`open.spotify.com`) | Not yet tested (needs a login) | Not yet tested |
-| Desktop apps (Spotify, Music) | Not supported yet, see Roadmap | |
-
-## Install (unpacked)
-
-1. Open `chrome://extensions` and turn on **Developer mode**.
-2. Click **Load unpacked** and choose the `extension/` folder of this repo.
-3. Reload any music tab that was already open.
-
-## Use
-
-Play a song, then click the **♪ Lyrics** pill (on YouTube it only appears on a video page) at the bottom right of the player page. A small window opens that
-stays above every other window and app. Resize it freely; the text scales with it. Keep the player tab open
-(it can be in the background): the window belongs to that tab and closes with it.
-
-Hover the window for **Earlier / Later** to nudge the timing in 0.5s steps when a lyric file is slightly off.
-
-## Look
-
-The window follows Apple's Liquid Glass design. The song's cover, blown up and blurred, tints the window. The
-lyrics sit on that colour, with the current line sharp and the rest softened. The title bar and the timing
-controls are glass capsules that bend the lyrics passing beneath them (an SVG displacement map used as a
-`backdrop-filter`, Chromium only). Chrome draws the floating window opaque, so the desktop does not show through
-it; see [docs/liquid-glass.md](docs/liquid-glass.md) for the research, the limits and the design decisions.
+| Source | Status |
+| --- | --- |
+| YouTube Music and YouTube in Chrome | Tested end to end (`npm run test:app`): lyrics in sync, play/pause/next, themes, settings, minimise to the island and back |
+| Spotify, Apple Music (web or app), Music.app, other browsers | Read the same way (macOS Now Playing); not yet tested |
 
 ## How it works
 
 ```
-player page ── probe.js ──▶ content.js ──▶ background.js ──▶ lrclib.net
- (page world)   title, artist,   track changed?    looks up + caches
-                duration,        asks for lyrics   synced lyrics
-                position         renders the window
+any player ──▶ macOS Now Playing ──▶ app/nowplaying.js ──▶ app/main.js ──▶ lrclib.net
+                (what Control         title, artist,         track changed?
+                 Center shows)        position, cover        look up + cache
+                                            │
+                                            ▼
+                                   app/renderer (the window): lyrics in time, glass UI, controls
 ```
 
-- **`probe.js`** runs in the page's own JS world. It reads the track from the Media Session metadata every one
-  of these players publishes, and the playback position from the player's media element. Players that never
-  attach that element to the page (Spotify) are caught by wrapping `HTMLMediaElement.prototype.play`. The clock
-  shown in the player's UI is the fallback, and on Spotify a cross-check.
-- **`content.js`** interpolates the position between reports, picks the line being sung, and renders into a
-  [Document Picture-in-Picture](https://developer.chrome.com/docs/web-platform/document-picture-in-picture)
-  window, which the OS keeps on top. Browsers without that API get an in-page panel instead.
-- **`background.js`** is the only part that touches the network. It asks [LRCLIB](https://lrclib.net) for the
-  track and caches the answer in `chrome.storage.local`.
-- **`glass.js`** builds the refracting glass: a displacement map computed from Snell's law over a rounded
-  bezel, applied as an SVG `backdrop-filter`.
-- **`core.js`** holds the pure logic (LRC parsing, title cleanup, candidate scoring) and is shared by the
-  extension and the Node tests.
+- **`app/nowplaying.js`** reads macOS Now Playing and sends play/pause/next/previous to whichever app owns it.
+  Since macOS 15.4 only Apple-entitled processes may do that;
+  [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) (BSD-3-Clause, vendored in
+  `vendor/mediaremote-adapter`) gets there through `/usr/bin/perl`, which is entitled. Chrome reports its
+  position about 0.2s late, which the app corrects.
+- **`app/main.js`** turns each report into a track (YouTube video titles and channel names are cleaned up by
+  `videoTrack()`), looks up lyrics, and owns the window. The window is frameless, transparent and always on top,
+  with native glass behind it from [electron-liquid-glass](https://github.com/Meridius-Labs/electron-liquid-glass).
+- **`app/lyrics.js`** asks [LRCLIB](https://lrclib.net) through the shared matcher and caches answers on disk.
+- **`app/renderer/`** draws the windows. `view.js` keeps the highlighted line on the music, `looks.js` defines the
+  appearance options and their limits, `settings.html` is the Settings window, and `island.html` / `island.js`
+  are the Dynamic Island ([docs/dynamic-island.md](docs/dynamic-island.md)).
+- **`extension/core.js`** (lyric matching, LRC parsing) and **`extension/glass.js`** (refracting glass) are shared
+  with the browser extension.
+
+## Look
+
+The window follows Apple's Liquid Glass design. Real macOS glass lets the desktop show through; the song's cover,
+blurred, lends it colour. The current line is sharp and the others soften. The title bar and the controls are
+glass capsules that bend the lyrics passing beneath them. Research, limits and decisions:
+[docs/liquid-glass.md](docs/liquid-glass.md). The notch island, and the open-source notch apps it was weighed
+against: [docs/dynamic-island.md](docs/dynamic-island.md).
 
 ## Lyrics source
 
-[LRCLIB](https://lrclib.net) — a free, open, crowd-sourced database of line-synced lyrics with a public API that
-needs no key. Being crowd-sourced it contains stub and mistimed entries, so candidates are scored on title,
-artist, duration and lyric length before one is shown.
+[LRCLIB](https://lrclib.net) is a free, open, crowd-sourced database of line-synced lyrics. Because anyone can
+add to it, candidates are scored on title, artist, duration and lyric length before one is shown.
+
+## The browser extension
+
+`extension/` is the earlier Chrome extension. It shows lyrics in Chrome's Picture-in-Picture window, which keeps
+Chrome's own title bar, and it needs no app install. Load it unpacked from `chrome://extensions` (Developer mode).
+`npm run test:e2e` tests it.
 
 ## Develop
 
 ```sh
-npm install        # only needed for the browser test (downloads Chrome for Testing)
-npm test           # core logic + live LRCLIB lookups
-npm run test:e2e   # plays a song on YouTube Music with the extension loaded and checks the sync
+npm test           # matcher, LRC parsing, appearance settings, live LRCLIB lookups
+npm run test:app   # plays a song in a test browser and drives the app: sync, themes, settings, controls
 ```
 
-There is no build step: `extension/` is loaded as is.
+`npm run test:app` briefly plays music at 2% volume and takes over macOS Now Playing. It checks that it is
+controlling its own test player before pressing any button.
 
 ## Roadmap
 
-- Verify and harden Spotify and Apple Music with signed-in accounts.
-- Desktop apps: a small local companion (started from the command line) that reads Spotify.app / Music.app and
-  feeds the same lyrics view.
-- More lyric sources as fallbacks, word-by-word highlighting, click a line to seek.
-- Truly see-through glass over other apps: the desktop companion window with native macOS glass
-  ([electron-liquid-glass](https://github.com/Meridius-Labs/electron-liquid-glass), macOS 26+).
-- More looks: light glass, compact single-line mode, word-by-word highlight.
+- Test Spotify and Apple Music (app and web) end to end.
+- Package as a signed `.app`, launch at login, menu-bar icon.
+- Windows (System Media Transport Controls) and Linux (MPRIS).
+- Word-by-word highlighting, click a line to seek.
 
 ## Credits
 
-Lyrics by the [LRCLIB](https://github.com/tranxuanthang/lrclib) community.
+Lyrics by the [LRCLIB](https://github.com/tranxuanthang/lrclib) community. Now Playing access by
+[mediaremote-adapter](https://github.com/ungive/mediaremote-adapter). Native glass by
+[electron-liquid-glass](https://github.com/Meridius-Labs/electron-liquid-glass).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). `vendor/mediaremote-adapter` is BSD-3-Clause; see its LICENSE.

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'" />
+    <title>FloatLyrics Settings</title>
+    <link rel="stylesheet" href="settings.css" />
+  </head>
+  <body>
+    <div class="drag"></div>
+    <main class="st">
+      <h1>Appearance</h1>
+
+      <section class="group">
+        <div class="row column">
+          <span class="label">Theme</span>
+          <div class="themes" id="themes" role="radiogroup" aria-label="Theme"></div>
+        </div>
+        <div class="row">
+          <label class="label" for="textSize">Text size</label>
+          <div class="control"><input type="range" id="textSize" min="0" max="3" step="1" /><output id="textSizeOut"></output></div>
+        </div>
+        <div class="row">
+          <span class="label">Alignment</span>
+          <div class="seg" id="align" role="radiogroup" aria-label="Alignment">
+            <button type="button" data-value="center" role="radio">Centre</button>
+            <button type="button" data-value="left" role="radio">Left</button>
+          </div>
+        </div>
+      </section>
+
+      <h2>Glass</h2>
+      <section class="group">
+        <div class="row">
+          <label class="label" for="clarity">Clear ↔ Frosted</label>
+          <div class="control"><input type="range" id="clarity" min="0" max="4" step="1" /><output id="clarityOut"></output></div>
+        </div>
+        <div class="row">
+          <label class="label" for="cover">Cover colour</label>
+          <div class="control"><input type="range" id="cover" min="0" max="4" step="1" /><output id="coverOut"></output></div>
+        </div>
+        <div class="row">
+          <label class="label" for="focus">Soften other lines</label>
+          <input type="checkbox" class="switch" id="focus" role="switch" />
+        </div>
+      </section>
+
+      <h2>Window</h2>
+      <section class="group">
+        <div class="row">
+          <label class="label" for="onTop">Keep above other windows</label>
+          <input type="checkbox" class="switch" id="onTop" role="switch" />
+        </div>
+        <div class="row">
+          <label class="label" for="island">Minimise into the notch <span class="hint">Lyrics carry on in a Dynamic Island</span></label>
+          <input type="checkbox" class="switch" id="island" role="switch" />
+        </div>
+      </section>
+
+      <footer>
+        <button type="button" id="reset" class="reset">Restore Defaults</button>
+      </footer>
+    </main>
+    <script src="looks.js"></script>
+    <script src="settings.js"></script>
+  </body>
+</html>

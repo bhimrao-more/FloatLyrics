@@ -1,0 +1,565 @@
+/* FloatLyrics window. Layers and reasoning: docs/liquid-glass.md. Behind all of this sits native macOS glass. */
+:root {
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", "Noto Sans Devanagari", sans-serif;
+  --radius: 22px;
+}
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+  cursor: default;
+}
+* {
+  box-sizing: border-box;
+}
+
+.fl {
+  /* Theme variables. "cover" is the default look; the other themes only move these. */
+  --fg: #fff;
+  --dim: rgba(255, 255, 255, 0.4);
+  --shadow: rgba(0, 0, 0, 0.18);
+  --shadow-active: rgba(0, 0, 0, 0.32);
+  --veil: 0 0 0;
+  --veil-top: 0.14;
+  --veil-bottom: 0.3;
+  --art-a: 0.62;
+  --art-b: 0.32;
+  --glass-fill: rgba(255, 255, 255, 0.1);
+  --glass-fg: rgba(255, 255, 255, 0.95);
+  --glass-sub: rgba(255, 255, 255, 0.68);
+  --pop-fill: rgba(24, 24, 30, 0.62);
+  /* Appearance settings (looks.js) */
+  --text-scale: 1;
+  --clarity: 1;
+  --cover: 1;
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  isolation: isolate;
+  container-type: size;
+  border-radius: var(--radius);
+  color: var(--fg);
+  font: 500 14px/1.35 var(--font);
+  -webkit-font-smoothing: antialiased;
+  -webkit-app-region: drag; /* the whole window drags; controls opt out */
+}
+.fl.glass-none {
+  background: rgba(22, 22, 28, 0.94);
+}
+.fl[data-theme="clear"] {
+  --art-a: 0.24;
+  --art-b: 0.12;
+  --veil-top: 0.05;
+  --veil-bottom: 0.16;
+  --dim: rgba(255, 255, 255, 0.5);
+  --shadow: rgba(0, 0, 0, 0.38);
+  --shadow-active: rgba(0, 0, 0, 0.55);
+  --glass-fill: rgba(255, 255, 255, 0.06);
+}
+.fl[data-theme="tinted"] {
+  --art-a: 0.55;
+  --art-b: 0.24;
+  --veil-top: 0.42;
+  --veil-bottom: 0.56;
+  --glass-fill: rgba(255, 255, 255, 0.08);
+}
+.fl[data-theme="graphite"] {
+  --art-a: 0;
+  --art-b: 0;
+  --veil: 28 28 32;
+  --veil-top: 0.44;
+  --veil-bottom: 0.58;
+}
+.fl[data-theme="light"] {
+  --fg: #141418;
+  --dim: rgba(20, 20, 24, 0.38);
+  --shadow: rgba(255, 255, 255, 0);
+  --shadow-active: rgba(255, 255, 255, 0.45);
+  --veil: 250 250 252;
+  --veil-top: 0.5;
+  --veil-bottom: 0.62;
+  --art-a: 0.42;
+  --art-b: 0.2;
+  --glass-fill: rgba(255, 255, 255, 0.42);
+  --glass-fg: rgba(20, 20, 24, 0.9);
+  --glass-sub: rgba(20, 20, 24, 0.58);
+  --pop-fill: rgba(250, 250, 252, 0.78);
+}
+button {
+  -webkit-app-region: no-drag;
+}
+
+/* Colour: the cover, blown up and blurred, laid thinly over the glass so the desktop still shows through. */
+.fl-bg {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  overflow: hidden;
+}
+.fl-art {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: max(170cqw, 170cqh);
+  height: max(170cqw, 170cqh);
+  translate: -50% -50%;
+  object-fit: cover;
+  opacity: 0;
+  filter: blur(44px) saturate(1.8);
+  transition: opacity 1.1s ease;
+  animation: fl-drift-a 32s ease-in-out infinite alternate;
+}
+.fl-art.b {
+  left: 80%;
+  top: 85%;
+  width: max(120cqw, 120cqh);
+  height: max(120cqw, 120cqh);
+  mix-blend-mode: screen;
+  filter: blur(56px) saturate(2.1);
+  animation: fl-drift-b 41s ease-in-out infinite alternate;
+}
+.fl-art.is-shown {
+  opacity: min(0.9, calc(var(--art-a) * var(--cover)));
+}
+.fl-art.b.is-shown {
+  opacity: min(0.6, calc(var(--art-b) * var(--cover)));
+}
+@keyframes fl-drift-a {
+  from { transform: rotate(0deg) scale(1); }
+  to { transform: rotate(28deg) scale(1.18) translate(4%, -3%); }
+}
+@keyframes fl-drift-b {
+  from { transform: rotate(180deg) scale(1.05); }
+  to { transform: rotate(140deg) scale(0.92) translate(-6%, 4%); }
+}
+/* Dimming for legibility over bright covers and bright desktops (Apple suggests ~35% over bright media). */
+.fl-dim {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(
+    rgb(var(--veil) / min(0.92, calc(var(--veil-top) * var(--clarity)))),
+    rgb(var(--veil) / min(0.95, calc(var(--veil-bottom) * var(--clarity))))
+  );
+}
+/* Glass edge of the window: hairline rim and a top highlight. */
+.fl::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+
+/* Lyrics are content, not glass: sharp current line, softer neighbours. */
+.fl-body {
+  position: absolute;
+  inset: 0;
+  container-type: size;
+}
+.fl-lines {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+  padding: 50cqh 18px;
+  text-align: center;
+  mask-image: linear-gradient(rgba(0, 0, 0, 0.3), #000 28%, #000 72%, transparent);
+}
+.fl-lines::-webkit-scrollbar {
+  display: none;
+}
+.fl-line {
+  margin: 0;
+  padding: 0.3em 0;
+  font-size: calc(clamp(14px, 5.6cqw, 36px) * var(--text-scale));
+  font-weight: 750;
+  letter-spacing: -0.01em;
+  line-height: 1.22;
+  color: var(--dim);
+  filter: blur(0.6px);
+  transform: scale(0.95);
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+  text-shadow: 0 1px 10px var(--shadow);
+  transition: color 0.35s ease, filter 0.35s ease, transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.fl-line.is-active {
+  color: var(--fg);
+  filter: none;
+  transform: none;
+  text-shadow: 0 1px 14px var(--shadow-active);
+}
+.fl.no-focus .fl-line {
+  filter: none;
+  transform: none;
+  color: color-mix(in srgb, var(--fg) 62%, transparent);
+}
+.fl.no-focus .fl-line.is-active {
+  color: var(--fg);
+}
+.fl[data-align="left"] .fl-lines {
+  padding-inline: 22px;
+  text-align: left;
+}
+.fl[data-align="left"] .fl-line {
+  transform-origin: left center;
+}
+.fl.is-plain .fl-lines {
+  padding-block: 52px 16px;
+}
+.fl.is-plain .fl-line {
+  color: color-mix(in srgb, var(--fg) 88%, transparent);
+  filter: none;
+  font-size: calc(clamp(12px, 4cqw, 20px) * var(--text-scale));
+  font-weight: 550;
+  transform: none;
+}
+.fl-msg {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 16px 16px;
+  text-align: center;
+  color: color-mix(in srgb, var(--fg) 82%, transparent);
+  font-size: clamp(12px, 4.4cqw, 20px);
+  font-weight: 600;
+  text-shadow: 0 1px 10px var(--shadow-active);
+}
+[hidden] {
+  display: none !important;
+}
+
+/* Glass capsules: the functional layer floating over the lyrics. glass.js adds refraction. */
+.fl-glass {
+  position: absolute;
+  z-index: 2;
+  background: var(--glass-fill);
+  backdrop-filter: blur(12px) saturate(1.4);
+  box-shadow: 0 8px 22px -8px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.22), inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+}
+.fl-glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0.12) 28%, rgba(255, 255, 255, 0) 50%, rgba(255, 255, 255, 0.1) 72%, rgba(255, 255, 255, 0.42));
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+}
+.fl-glass::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(120% 160% at 12% -30%, rgba(255, 255, 255, 0.2), transparent 55%);
+}
+
+.fl-head {
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 5px;
+  border-radius: 19px; /* concentric with the window: 22px corner − ~3px inset */
+  white-space: nowrap;
+}
+.fl-thumb {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 14px;
+  object-fit: cover;
+  opacity: 0;
+  background: rgba(255, 255, 255, 0.12);
+  transition: opacity 0.6s ease;
+}
+.fl-thumb.is-shown {
+  opacity: 1;
+}
+.fl-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+  font-size: 12px;
+}
+.fl-title {
+  font-weight: 650;
+  color: var(--glass-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fl-artist {
+  flex-shrink: 3;
+  color: var(--glass-sub);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fl-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 15px;
+  background: transparent;
+  color: var(--glass-fg);
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease, opacity 0.2s ease;
+}
+.fl-icon:hover {
+  background: color-mix(in srgb, var(--glass-fg) 16%, transparent);
+}
+.fl-icon:active {
+  transform: scale(0.92);
+}
+.fl-icon svg {
+  width: 15px;
+  height: 15px;
+}
+.fl-icon path,
+.fl-icon circle {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+.fl-icon path.fill {
+  fill: currentColor;
+  stroke: none;
+}
+.fl-play svg {
+  width: 17px;
+  height: 17px;
+}
+.fl-play .i-pause,
+.fl.is-playing .fl-play .i-play {
+  display: none;
+}
+.fl.is-playing .fl-play .i-pause {
+  display: block;
+}
+.fl-hover {
+  width: 26px;
+  height: 26px;
+  opacity: 0;
+}
+.fl-hover svg {
+  width: 14px;
+  height: 14px;
+}
+.fl-close svg {
+  width: 13px;
+  height: 13px;
+}
+.fl:hover .fl-hover,
+.fl-hover:focus-visible,
+.fl-hover[aria-expanded="true"] {
+  opacity: 0.85;
+}
+
+/* Appearance popover: five themes, text size, and the way to Settings. */
+.fl-pop {
+  position: absolute;
+  z-index: 4;
+  top: 52px;
+  right: 8px;
+  width: 232px;
+  display: grid;
+  gap: 8px;
+  padding: 10px 10px 8px;
+  border-radius: 18px;
+  background: var(--pop-fill);
+  backdrop-filter: blur(24px) saturate(1.6);
+  box-shadow: 0 14px 34px -10px rgba(0, 0, 0, 0.55), inset 0 0 0 0.5px rgba(255, 255, 255, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  color: var(--glass-fg);
+  -webkit-app-region: no-drag;
+  transform-origin: top right;
+  animation: fl-pop-in 0.16s ease-out;
+}
+@keyframes fl-pop-in {
+  from { opacity: 0; transform: scale(0.96); }
+}
+.fl-pop-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.fl-pop-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--glass-sub);
+}
+.fl-swatches {
+  display: flex;
+  gap: 6px;
+}
+.fl-swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.5), 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 0.12s ease;
+}
+.fl-swatch:hover {
+  transform: scale(1.08);
+}
+.fl-swatch[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px var(--pop-fill), 0 0 0 3.5px var(--glass-fg);
+}
+.fl-swatch[data-theme="cover"] { background: conic-gradient(from 200deg, #f2994a, #eb5757, #9b51e0, #2f80ed, #27ae60, #f2c94c, #f2994a); }
+.fl-swatch[data-theme="clear"] { background: linear-gradient(135deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0.08)); }
+.fl-swatch[data-theme="tinted"] { background: linear-gradient(135deg, #5a4a6e, #1d1a24); }
+.fl-swatch[data-theme="graphite"] { background: linear-gradient(135deg, #8e8e93, #3a3a3e); }
+.fl-swatch[data-theme="light"] { background: linear-gradient(135deg, #ffffff, #e4e4ea); }
+.fl-seg {
+  display: flex;
+  padding: 2px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--glass-fg) 10%, transparent);
+}
+.fl-seg button {
+  width: 44px;
+  height: 24px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--glass-fg);
+  font-family: var(--font);
+  font-weight: 650;
+  cursor: pointer;
+}
+.fl-seg button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--glass-fg) 14%, transparent);
+}
+.fl-seg button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.a-sm { font-size: 11px; }
+.a-lg { font-size: 15px; }
+.fl-pop-adv {
+  height: 28px;
+  border: 0;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--glass-fg) 10%, transparent);
+  color: var(--glass-fg);
+  font: 600 12px/1 var(--font);
+  cursor: pointer;
+}
+.fl-pop-adv:hover {
+  background: color-mix(in srgb, var(--glass-fg) 18%, transparent);
+}
+
+.fl-foot {
+  left: 50%;
+  bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 18px;
+  white-space: nowrap;
+  opacity: 0;
+  translate: -50% 4px;
+  transition: opacity 0.2s ease, translate 0.2s ease;
+}
+.fl:hover .fl-foot,
+.fl-foot:focus-within {
+  opacity: 1;
+  translate: -50% 0;
+}
+.fl-sync-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.fl-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 5px;
+  background: color-mix(in srgb, var(--glass-fg) 22%, transparent);
+}
+.fl-btn {
+  height: 30px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 15px;
+  background: transparent;
+  color: var(--glass-fg);
+  font: 600 11.5px/1 var(--font);
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.fl-btn:hover {
+  background: color-mix(in srgb, var(--glass-fg) 16%, transparent);
+}
+.fl-btn:active {
+  transform: scale(0.95);
+}
+.fl-sync {
+  padding: 0 3px;
+  font-size: 11px;
+  color: var(--glass-sub);
+  font-variant-numeric: tabular-nums;
+}
+
+@container (max-width: 330px) {
+  .fl-sync-group {
+    display: none;
+  }
+}
+@media (max-height: 120px) {
+  .fl-head,
+  .fl-foot {
+    display: none;
+  }
+  .fl-msg {
+    padding-top: 16px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fl-art {
+    animation: none;
+  }
+  .fl-line {
+    transition: none;
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .fl {
+    background: rgba(22, 22, 28, 0.96);
+  }
+  .fl-glass {
+    background: rgba(40, 40, 46, 0.96);
+    backdrop-filter: none !important;
+  }
+  .fl-line {
+    filter: none;
+  }
+}

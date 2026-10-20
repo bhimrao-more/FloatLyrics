@@ -1,14 +1,21 @@
 {
   "name": "floatlyrics",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "Time-synced lyrics in a small always-on-top window for YouTube Music, Spotify and Apple Music.",
+  "description": "Time-synced lyrics in a small always-on-top glass window for whatever is playing on your Mac.",
   "license": "MIT",
+  "main": "app/main.js",
   "scripts": {
-    "test": "node --test test/core.test.js",
+    "start": "electron .",
+    "test": "node --test test/core.test.js test/looks.test.js",
+    "test:app": "node test/e2e-app.mjs",
     "test:e2e": "node test/e2e-ytmusic.mjs"
   },
+  "dependencies": {
+    "electron-liquid-glass": "^1.1.1"
+  },
   "devDependencies": {
+    "electron": "^44.9.0",
     "puppeteer": "^25.13.0"
   }
 }

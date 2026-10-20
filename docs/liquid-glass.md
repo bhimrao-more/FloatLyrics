@@ -78,25 +78,19 @@ document.
 | [naughtyduk/liquidGL](https://github.com/naughtyduk/liquidGL) | WebGL/WebGPU version that renders a cloned background, so it also works outside Chromium. Its licence is not a plain MIT; check before reusing code. |
 | [Meridius-Labs/electron-liquid-glass](https://github.com/Meridius-Labs/electron-liquid-glass) | *Real* native glass in Electron. It puts macOS 26's `NSGlassEffectView` behind a transparent `BrowserWindow`, with tint, corner radius and variant options. Requires macOS 26+ and Electron 30+, and uses private API for some options. |
 
-## The limit we work within
+## Where the glass is real
 
-The always-on-top window is a Chrome **Document Picture-in-Picture** window. Chrome draws it as an **opaque**
-window, and `requestWindow()` has no transparency option. The desktop behind it therefore cannot show through.
-So inside the extension:
+**Desktop app (`app/`, the main product).** The window is a frameless, transparent Electron window with macOS 26's
+native `NSGlassEffectView` behind the web content (`electron-liquid-glass`, `cornerRadius: 22`, a faint dark
+tint). The desktop really shows through, refracted and blurred by the system. On top of it the web layer adds
+the cover colour *thinly* (about 60%) so the glass keeps its see-through quality. Below macOS 26 it falls back to
+`vibrancy: 'hud'` (frosted).
 
-- The *album cover*, blown up and heavily blurred, acts as the "world behind the glass". It gives the window its
-  colour.
-- The window itself is treated as a pane of glass over that colour field: rim light, depth, and a dimming layer
-  for legibility.
-- The functional controls are real refracting glass: the title capsule and the timing capsule. The lyrics
-  scrolling beneath them bend at their edges.
+**Browser extension (`extension/`).** Chrome draws its Document Picture-in-Picture window **opaque** with its own
+title bar, so nothing behind it shows through. There the cover colour field stands in for "the world behind the
+glass". This limit is why the project moved to the desktop app.
 
-Truly see-through glass over other apps needs a native window. That is the desktop-companion path: an Electron
-window with `transparent: true` plus `electron-liquid-glass` (macOS 26+), loading the same UI. Keep the UI
-self-contained (DOM + CSS + `glass.js`) so it can move into such a window unchanged.
-
-The in-page fallback panel (used when Document PiP is unavailable) floats over the player page itself, so there
-`backdrop-filter` gives genuine translucency over the page.
+In both, the functional capsules (title, controls) refract the lyrics passing beneath them via `glass.js`.
 
 ## Decisions in FloatLyrics
 
@@ -106,10 +100,29 @@ The in-page fallback panel (used when Document PiP is unavailable) floats over t
 | Dimming | About 30% dark gradient over the colour field (Apple's 35% guidance for bright media), plus a faint text shadow on the active line |
 | Lyrics (content layer) | Not glass. Active line white and bold; other lines translucent white, slightly blurred and smaller (Apple Music-style focus). Edges fade like a scroll edge effect. |
 | Title capsule (functional) | Refracting glass pill: cover thumbnail (concentric radius), title, artist |
-| Timing capsule (functional) | Refracting glass pill that appears on hover: Earlier · Sync · Later, plus the source |
-| Window pane | Inner hairline rim and top highlight around the whole window |
-| Launcher pill on the page | CSS glass (blur + saturate + rim) over the real page |
+| Controls capsule (functional) | Refracting glass pill that appears on hover: ⏮ ⏯ ⏭, then Earlier · Sync · Later (the sync group hides below 330px wide) |
+| Window pane | 22px corners matching the native glass, inner hairline rim and top highlight. Capsules use 19px (concentric). |
+| Launcher pill (extension only) | CSS glass (blur + saturate + rim) over the real page |
 | Accessibility | `prefers-reduced-transparency` → opaque surfaces and a heavier dim; `prefers-reduced-motion` → no drift, no smooth scrolling |
 
 Lens parameters live in `extension/glass.js`. Tune `bezel` (refracting rim width), `thickness` (displacement
 strength) and the trailing `blur()` (regular ≈ more blur, clear ≈ less).
+
+## Appearance options (kept deliberately small)
+
+Like Apple's own Liquid Glass settings (Clear / Tinted, text size), people get a few bounded adjustments and
+never a free-form editor. Every combination still looks like FloatLyrics, and the defaults are the look above.
+Defined and validated in `app/renderer/looks.js`.
+
+| Option | Where | Steps |
+| --- | --- | --- |
+| Theme | popover + Settings | **Cover** (default: cover colour), **Clear** (most see-through, stronger text shadow), **Tinted** (darker veil, easiest to read), **Graphite** (neutral, no cover colour), **Light** (light veil, dark text) |
+| Text size | popover + Settings | 0.85 · **1** · 1.15 · 1.3 × |
+| Glass: Clear ↔ Frosted | Settings | veil × 0.4 · 0.7 · **1** · 1.4 · 1.8 |
+| Cover colour | Settings | cover opacity × 0 · 0.5 · **1** · 1.3 · 1.6 (capped) |
+| Soften other lines | Settings | **on** / off |
+| Alignment | Settings | **Centre** / Left |
+| Keep above other windows | Settings | **on** / off |
+
+Themes only move CSS variables (`--veil`, `--art-a`, `--glass-fill`, `--fg`…), never the layout.
+
