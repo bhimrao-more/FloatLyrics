@@ -9,19 +9,25 @@ const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const { NowPlaying } = require('./nowplaying');
 const { createLyrics } = require('./lyrics');
-const { normalize, videoTrack } = require('../extension/core.js');
+const { normalize, videoTrack, captionLyrics, captionsUsable } = require('../extension/core.js');
 const looks = require('./renderer/looks.js');
 
 // For the e2e test: a DevTools port to drive the window, and a throwaway settings folder. Test copies are
 // invisible and click-through (FL_TEST), so nobody mistakes them for the real app or clicks them by accident.
 const TEST = !!process.env.FL_TEST;
+// FL_NO_NOWPLAYING: follow only the extension's test tab; never read or control macOS Now Playing, so a test run
+// can never touch the music you are listening to.
+const NO_NOWPLAYING = !!process.env.FL_NO_NOWPLAYING;
 const hideForTest = (w) => {
   if (!TEST) return;
   w.setOpacity(0);
   w.setIgnoreMouseEvents(true);
+  w.webContents.setAudioMuted(true); // no test crackle in your speakers
 };
 if (process.env.FL_DEBUG_PORT) app.commandLine.appendSwitch('remote-debugging-port', process.env.FL_DEBUG_PORT);
 if (process.env.FL_USER_DATA) app.setPath('userData', process.env.FL_USER_DATA);
+// The record crackle (vinyl.js) starts with the music, not with a click in the window.
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 // Browsers report web players as they are: YouTube video titles, channel names as artists.
 const BROWSER = /^(com\.google\.chrome|com\.apple\.safari|company\.thebrowser|com\.microsoft\.edgemac|com\.brave\.browser|org\.mozilla\.firefox|com\.operasoftware|com\.vivaldi)/i;
@@ -31,12 +37,19 @@ const leadFor = (bundle) => (/^com\.google\.chrome/i.test(bundle) ? 0.2 : 0);
 const np = new NowPlaying();
 let lyrics;
 let win = null; // the floating lyrics window: the app itself
-let island = null; // the Dynamic Island around the notch, active while the window is minimised
-let islandActive = false;
 let settingsWin = null;
 let settings = looks.DEFAULTS;
 const last = {}; // latest message per channel, replayed when a window (re)loads
-const offsets = new Map(); // the user's timing nudge per song, shared by the window and the island
+const offsets = new Map(); // the user's timing nudge per song, shared by the window and the island, kept on disk
+const offsetsFile = () => path.join(app.getPath('userData'), 'offsets.json');
+let offsetsTimer = null;
+function saveOffsets() {
+  clearTimeout(offsetsTimer);
+  offsetsTimer = setTimeout(() => {
+    const entries = [...offsets].filter(([, v]) => v !== 0).slice(-500);
+    fs.writeFile(offsetsFile(), JSON.stringify(Object.fromEntries(entries)), () => {});
+  }, 800);
+}
 
 function send(channel, data) {
   last[channel] = data;
@@ -137,6 +150,7 @@ function tabReports(now) {
       lead: 0,
       ad: !!t.ad,
       art: t.artwork || '',
+      captions: t.site === 'youtube' && t.captions && t.captions.videoId === t.videoId ? t.captions : null,
     });
   }
   return out;
@@ -201,9 +215,34 @@ function choose(now) {
   return r;
 }
 
-let song = { key: '', duration: null, since: 0 }; // the song the lyrics are for
+let song = { key: '', duration: null, since: 0, found: null, captions: '' }; // the song the lyrics are for
 let lookupTimer = null;
 let shownArt = null;
+
+// The lyrics for the song, once the lookup is back. On youtube.com the video's own captions lead when they are
+// the lyrics (timed to this very video: its intro, scenes and edit); the recordings found online follow as other
+// versions, and are what is shown when the captions are something else.
+function showLyrics() {
+  const found = song.found;
+  if (!found) return;
+  const caps = current && current.captions;
+  song.captions = caps ? `${caps.videoId}|${caps.lang}` : '';
+  let out = found;
+  if (caps) {
+    const ref = (found.status === 'synced' || found.status === 'plain') && found.lines ? found.lines : null;
+    const c = captionLyrics(caps.cues, ref);
+    if (captionsUsable(c)) {
+      const own = {
+        lines: c.lines,
+        approx: false,
+        source: { provider: 'YouTube', title: current.title, artist: current.artist, album: "This video's captions", duration: current.duration },
+      };
+      const others = found.status === 'synced' ? found.versions || [{ lines: found.lines, approx: found.approx, source: found.source }] : [];
+      out = { ...found, ...own, status: 'synced', versions: [own, ...others].slice(0, 5) };
+    }
+  }
+  send('lyrics', { ...out, key: song.key, version: 0 });
+}
 
 function publish(r) {
   current = r;
@@ -230,11 +269,12 @@ function publish(r) {
   const art = r && r.art ? r.art : '';
   if (art && art !== shownArt) {
     shownArt = art;
-    send('art', art);
+    if (art.startsWith('data:')) send('art', art);
+    else artAsData(art).then((data) => shownArt === art && send('art', data || art));
   }
 
   if (key !== song.key) {
-    song = { key, duration: null, since: Date.now() };
+    song = { key, duration: null, since: Date.now(), found: null, captions: '' };
     clearTimeout(lookupTimer);
     send('offset', { key, value: offsets.get(key) || 0 });
     if (!r) return send('lyrics', { key, status: 'idle' });
@@ -242,6 +282,9 @@ function publish(r) {
     send('lyrics', { key, status: 'loading' });
   }
   if (!r || isAd) return undefined;
+  // The video's captions arrived (or changed) after the lyrics were shown: show them again with the captions.
+  const caps = r.captions ? `${r.captions.videoId}|${r.captions.lang}` : '';
+  if (song.found && caps !== song.captions) showLyrics();
   // Look up once the length is known, because the length picks the right recording; stop waiting after 3s.
   // A big change in length later (an advert ended, a different upload) is worth a second look.
   const settled = r.duration >= 30 || Date.now() - song.since > 3000;
@@ -252,8 +295,16 @@ function publish(r) {
     const track = { title: r.title, artist: r.artist, album: r.album, duration: r.duration, alt: r.alt, tempo: r.tempo };
     lookupTimer = setTimeout(() => {
       lyrics.lookup(track).then(
-        (result) => key === song.key && send('lyrics', { ...result, key, version: 0 }),
-        () => key === song.key && send('lyrics', { key, status: 'error' }),
+        (result) => {
+          if (key !== song.key) return;
+          song.found = result;
+          showLyrics();
+        },
+        () => {
+          if (key !== song.key) return;
+          song.found = { status: 'error' };
+          showLyrics();
+        },
       );
     }, 250);
   }
@@ -264,6 +315,26 @@ function update() {
   publish(choose(Date.now()));
 }
 
+// Covers from web players live on other sites (YouTube, Spotify), and a page cannot read the colours of an
+// image from another site. Fetched here and handed over as data, the island can tint its ring, equaliser and
+// karaoke fill from the cover.
+const artCache = new Map();
+async function artAsData(url) {
+  if (artCache.has(url)) return artCache.get(url);
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const type = res.headers.get('content-type') || 'image/jpeg';
+    if (!type.startsWith('image/')) return null;
+    const data = `data:${type};base64,${Buffer.from(await res.arrayBuffer()).toString('base64')}`;
+    artCache.set(url, data);
+    if (artCache.size > 20) artCache.delete(artCache.keys().next().value);
+    return data;
+  } catch (err) {
+    return null;
+  }
+}
+
 // Play/pause/next go to whoever the lyrics come from: an extension tab gets them on its next report (≤250ms),
 // anything else through macOS Now Playing.
 const tabCommands = new Map();
@@ -272,7 +343,7 @@ function command(name) {
     tabCommands.set(current.tabId, [...(tabCommands.get(current.tabId) || []), name]);
     return Promise.resolve();
   }
-  return np.send(name);
+  return NO_NOWPLAYING ? Promise.resolve() : np.send(name);
 }
 
 // The extension posts each tab's player state here. Only Chrome extensions can: websites cannot add the custom
@@ -290,7 +361,7 @@ function startBridge() {
     let body = '';
     req.on('data', (chunk) => {
       body += chunk;
-      if (body.length > 64 * 1024) req.destroy();
+      if (body.length > 256 * 1024) req.destroy();
     });
     req.on('end', () => {
       try {
@@ -302,7 +373,9 @@ function startBridge() {
           // When this tab started playing what it plays now, to tell which of several players is the newest.
           const restarted = !st.paused && (!prev || prev.paused || prev.title !== st.title);
           const startedAt = restarted ? Date.now() : (prev && prev.startedAt) || 0;
-          tabs.set(msg.tabId, { ...st, tabId: msg.tabId, startedAt, receivedAt: Date.now() });
+          // A YouTube video's own captions come once (and now and then again); keep them while it plays.
+          const captions = st.captions || (prev && prev.captions && st.videoId && prev.captions.videoId === st.videoId ? prev.captions : null);
+          tabs.set(msg.tabId, { ...st, captions, tabId: msg.tabId, startedAt, receivedAt: Date.now() });
         }
         update();
         const commands = tabCommands.get(msg.tabId);
@@ -346,6 +419,7 @@ function setSettings(next) {
   if (win && !win.isDestroyed()) win.setAlwaysOnTop(settings.onTop, 'floating');
   if (!settings.island && islandActive) restoreFromIsland();
   placeIsland();
+  applyIslandGlass(); // the glass tint follows the theme
   return settings;
 }
 
@@ -357,7 +431,7 @@ function openSettings() {
   }
   settingsWin = new BrowserWindow({
     width: 460,
-    height: 700,
+    height: 820,
     resizable: false,
     maximizable: false,
     fullscreenable: false,
@@ -450,6 +524,13 @@ function createWindow() {
     saveTimer = setTimeout(() => fs.writeFile(boundsFile(), JSON.stringify(win.getBounds()), () => {}), 400);
   };
   win.on('moved', saveBounds);
+  // With "Same screen as the window", have the island ready on whichever screen the window moved to.
+  let placeTimer = null;
+  win.on('moved', () => {
+    if (settings.islandScreen !== 'window' || islandActive) return;
+    clearTimeout(placeTimer);
+    placeTimer = setTimeout(placeIsland, 500);
+  });
   win.on('resized', saveBounds);
 
   win.webContents.on('did-finish-load', () => {
@@ -473,60 +554,231 @@ function createWindow() {
 
 /* ---------- Dynamic Island ---------- */
 
-// The notch's size, from AppKit (Electron does not expose it). null on Macs and displays without one.
-let notchCache;
-function notch() {
-  if (notchCache !== undefined) return notchCache;
-  notchCache = null;
+// Every screen as AppKit sees it: its name and, on MacBooks, the notch (Electron knows neither). Matched to
+// Electron's displays by position and size. Asked once, and again when screens change.
+let screensCache = null;
+function screenInfo() {
+  if (screensCache) return screensCache;
+  screensCache = [];
   try {
     const out = execFileSync(
       'osascript',
-      ['-l', 'JavaScript', '-e', 'ObjC.import("AppKit"); const r = []; const s = $.NSScreen.screens; for (let i = 0; i < s.count; i++) { const c = s.objectAtIndex(i); r.push({ w: c.frame.size.width, top: c.safeAreaInsets.top, left: c.auxiliaryTopLeftArea.size.width, right: c.auxiliaryTopRightArea.size.width }); } JSON.stringify(r)'],
+      ['-l', 'JavaScript', '-e', 'ObjC.import("AppKit"); const r = []; const s = $.NSScreen.screens; const H = s.objectAtIndex(0).frame.size.height; for (let i = 0; i < s.count; i++) { const c = s.objectAtIndex(i); const f = c.frame; r.push({ name: c.localizedName.js, x: f.origin.x, y: H - f.origin.y - f.size.height, w: f.size.width, h: f.size.height, top: c.safeAreaInsets.top, left: c.auxiliaryTopLeftArea.size.width, right: c.auxiliaryTopRightArea.size.width }); } JSON.stringify(r)'],
       { encoding: 'utf8', timeout: 5000 },
     );
-    const n = JSON.parse(out).find((x) => x.top > 0 && x.left > 0 && x.right > 0);
-    if (n) notchCache = { width: n.w - n.left - n.right, height: n.top, screenWidth: n.w };
+    screensCache = JSON.parse(out);
   } catch (err) {}
-  return notchCache;
+  return screensCache;
 }
+const appKitScreen = (d) => screenInfo().find((s) => Math.abs(s.x - d.bounds.x) < 2 && Math.abs(s.y - d.bounds.y) < 2 && Math.abs(s.w - d.bounds.width) < 2);
+// The notch on this display as { width, height }, or null. FL_ISLAND_PILL pretends there is none (tests).
+function notchOf(d) {
+  if (process.env.FL_ISLAND_PILL) return null;
+  const s = appKitScreen(d);
+  return s && s.top > 0 && s.left > 0 && s.right > 0 ? { width: s.w - s.left - s.right, height: s.top } : null;
+}
+const nameOf = (d) => (appKitScreen(d) || {}).name || d.label || (d.internal ? 'Built-in Display' : `Display ${d.id}`);
 
-// The island lives on the built-in display when it has a notch, otherwise as a floating pill on the main display.
-// Where the island goes: around the notch, or (setting "Window's screen") at the top of the screen the window is
-// on, as a floating pill when that screen has no notch. FL_ISLAND_PILL forces the pill (tests, screenshots).
-function islandPlace() {
-  const n = process.env.FL_ISLAND_PILL ? null : notch();
-  const internal = screen.getAllDisplays().find((d) => d.internal && (!n || Math.abs(d.bounds.width - n.screenWidth) < 2));
-  if (settings.islandScreen === 'window' && win && !win.isDestroyed()) {
-    const d = screen.getDisplayMatching(windowBounds || win.getBounds());
-    return { display: d, notch: n && internal && d.id === internal.id ? n : null };
-  }
-  return n && internal ? { display: internal, notch: n } : { display: screen.getPrimaryDisplay(), notch: null };
-}
 let windowBounds = null; // where the window was when it last went into the island
 
-const ISLAND_W = 640;
-const ISLAND_H = 240;
-
-function sendIsland() {
-  const { notch: n } = islandPlace();
-  send('island', { active: islandActive, hasNotch: !!n, notchWidth: n ? n.width : 0, notchHeight: n ? n.height : 0 });
+// Where the island goes (Settings → Island appears on): around the notch, on the window's screen, or on one
+// chosen screen. Any screen without a notch gets the glass island.
+function islandPlace(pick = settings.islandScreen, name = settings.islandScreenName) {
+  const all = screen.getAllDisplays();
+  let d = null;
+  if (pick === 'window' && win && !win.isDestroyed()) d = screen.getDisplayMatching(win.isVisible() && !animating ? win.getBounds() : windowBounds || win.getBounds());
+  else if (pick.startsWith('display:')) d = all.find((x) => `display:${x.id}` === pick) || all.find((x) => nameOf(x) === name) || null;
+  if (!d) d = all.find(notchOf) || screen.getPrimaryDisplay();
+  return { display: d, notch: notchOf(d) };
 }
 
-function placeIsland() {
-  if (!island) return;
-  const b = islandPlace().display.bounds;
-  island.setBounds({ x: Math.round(b.x + b.width / 2 - ISLAND_W / 2), y: b.y, width: ISLAND_W, height: ISLAND_H });
+// The choices for Settings, each with the screen it means right now.
+function islandScreens() {
+  const all = screen.getAllDisplays();
+  const at = (id) => {
+    const { display, notch: n } = islandPlace(id, '');
+    return { bounds: display.bounds, notch: !!n, screen: nameOf(display) };
+  };
+  const notched = all.find(notchOf);
+  return [
+    { id: 'notch', label: notched ? 'MacBook notch' : 'Main screen', ...at('notch') },
+    { id: 'window', label: 'Same screen as the window', ...at('window') },
+    ...all.map((d) => ({ id: `display:${d.id}`, label: nameOf(d), name: nameOf(d), bounds: d.bounds, notch: !!notchOf(d), screen: nameOf(d) })),
+  ];
+}
+
+const ISLAND_W = 640; // the notch island lives in a large, click-through window
+const ISLAND_H = 240;
+// Screens without a notch get a glass island instead: the window takes the island's own size, wears native macOS
+// glass, and sits GLASS_R above the top edge so its top corners are hidden and it hangs from the top. (A version
+// with notch-like curves into the top edge was tried on 2026-10-20; the user preferred this one.)
+const GLASS_R = 16;
+const GLASS_ROW_H = 38;
+
+let island = null; // the island window; one kind (notch or glass) for its whole life
+let islandKind = '';
+let islandAt = null; // { display, notch } it is placed on
+let islandLoaded = false;
+let islandReady = false; // its page has laid itself out for this kind and screen
+let islandWanted = false; // glass: the page has something to show
+let islandShown = false;
+let islandActive = false;
+let islandSize = { w: 200, h: GLASS_ROW_H };
+
+function islandGeo() {
+  const n = islandAt && islandAt.notch;
+  const glass = islandKind === 'glass';
+  return {
+    active: islandActive,
+    hasNotch: !!n,
+    notchWidth: n ? n.width : 0,
+    notchHeight: n ? n.height : 0,
+    glass,
+    inset: glass ? GLASS_R : 0,
+    rowHeight: GLASS_ROW_H,
+    shown: islandShown,
+  };
+}
+
+// Straight to the island, never broadcast or replayed: a new island must only ever hear about its own screen.
+function sendIsland() {
+  if (island && !island.isDestroyed() && islandLoaded) island.webContents.send('island', islandGeo());
+}
+
+function glassBounds() {
+  const b = islandAt.display.bounds;
+  const width = Math.round(islandSize.w);
+  return { x: Math.round(b.x + b.width / 2 - width / 2), y: b.y - GLASS_R, width, height: Math.round(islandSize.h) + GLASS_R };
+}
+
+// The glass island resizes on a spring (stiffness 380, damping 27: a touch of overshoot, like iPhone's island),
+// stepped here; the glass follows the window.
+let spring = null;
+function stopSpring() {
+  if (spring) clearInterval(spring.timer);
+  spring = null;
+}
+function setGlass(rect) {
+  island.setBounds(rect);
+}
+function springTo(to) {
+  if (!spring) {
+    const from = island.getBounds();
+    spring = { w: from.width, h: from.height, vw: 0, vh: 0, timer: null };
+  }
+  spring.to = to;
+  if (spring.timer) return;
+  let then = Date.now();
+  spring.timer = setInterval(() => {
+    if (!island || island.isDestroyed()) return stopSpring();
+    const now = Date.now();
+    const dt = Math.min(0.05, (now - then) / 1000);
+    then = now;
+    const steps = Math.max(1, Math.ceil(dt / 0.004));
+    for (let i = 0; i < steps; i++) {
+      const h = dt / steps;
+      for (const [p, v, k] of [['w', 'vw', 'width'], ['h', 'vh', 'height']]) {
+        spring[v] += (-380 * (spring[p] - spring.to[k]) - 27 * spring[v]) * h;
+        spring[p] += spring[v] * h;
+      }
+    }
+    const t = spring.to;
+    const done = Math.abs(spring.w - t.width) < 0.5 && Math.abs(spring.h - t.height) < 0.5 && Math.abs(spring.vw) < 8 && Math.abs(spring.vh) < 8;
+    const w = done ? t.width : Math.round(spring.w);
+    setGlass({ x: Math.round(t.x + t.width / 2 - w / 2), y: t.y, width: w, height: done ? t.height : Math.round(spring.h) });
+    if (done) stopSpring();
+    return undefined;
+  }, 16);
+}
+
+function setIslandBounds(animate) {
+  if (!island || island.isDestroyed()) return;
+  if (islandKind === 'notch') {
+    const b = islandAt.display.bounds;
+    island.setBounds({ x: Math.round(b.x + b.width / 2 - ISLAND_W / 2), y: b.y, width: ISLAND_W, height: ISLAND_H });
+    return;
+  }
+  const to = glassBounds();
+  if (animate && island.isVisible() && island.getBounds().y === to.y) springTo(to);
+  else {
+    stopSpring();
+    setGlass(to);
+  }
+}
+
+// Native glass for the glass island, tinted to suit the theme (light glass for the Light theme).
+function applyIslandGlass() {
+  if (!island || islandKind !== 'glass') return;
+  try {
+    const mod = require('electron-liquid-glass');
+    (mod.default || mod).addView(island.getNativeWindowHandle(), {
+      cornerRadius: GLASS_R,
+      tintColor: settings.theme === 'light' ? '#ffffff40' : '#0c0c1020',
+    });
+  } catch (err) {
+    try {
+      island.setVibrancy('hud');
+    } catch (e) {}
+  }
+}
+
+// Glass fades in and out; the notch island is always there, black inside the black notch.
+let fadeTimer = null;
+function fadeIsland(show) {
+  clearInterval(fadeTimer);
+  const w = island;
+  if (TEST || islandKind !== 'glass') {
+    if (show) w.showInactive();
+    else w.hide();
+    return;
+  }
+  if (show) {
+    w.setOpacity(0);
+    w.showInactive();
+  }
+  const from = w.getOpacity();
+  const t0 = Date.now();
+  fadeTimer = setInterval(() => {
+    if (w.isDestroyed()) return clearInterval(fadeTimer);
+    const k = Math.min(1, (Date.now() - t0) / (show ? 180 : 140));
+    w.setOpacity(from + ((show ? 1 : 0) - from) * k);
+    if (k === 1) {
+      clearInterval(fadeTimer);
+      if (!show) w.hide();
+    }
+    return undefined;
+  }, 16);
+}
+
+function syncIsland() {
+  if (!island || island.isDestroyed()) return;
+  const show = islandReady && (islandKind === 'notch' || (islandActive && islandWanted));
+  if (show === islandShown) return;
+  islandShown = show;
+  fadeIsland(show);
   sendIsland();
 }
 
-function createIsland() {
-  island = new BrowserWindow({
-    width: ISLAND_W,
-    height: ISLAND_H,
+// A fresh island window of the right kind for this screen. The old one goes at once; the new one shows only
+// when its page has laid itself out, so a half-made island is never on screen.
+function createIsland(place) {
+  if (island && !island.isDestroyed()) island.destroy();
+  stopSpring();
+  clearInterval(fadeTimer);
+  islandAt = place;
+  islandKind = place.notch ? 'notch' : 'glass';
+  islandLoaded = false;
+  islandReady = false;
+  islandWanted = false;
+  islandShown = false;
+  const glass = islandKind === 'glass';
+  const w = new BrowserWindow({
+    width: glass ? islandSize.w : ISLAND_W,
+    height: glass ? islandSize.h : ISLAND_H,
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
-    hasShadow: false,
+    hasShadow: glass,
     resizable: false,
     movable: false,
     focusable: false,
@@ -537,44 +789,68 @@ function createIsland() {
     show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true, backgroundThrottling: false },
   });
-  // Above the menu bar, on every Space, over full-screen apps; clicks pass through except on the island itself.
-  island.setAlwaysOnTop(true, 'screen-saver');
-  island.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  island.setIgnoreMouseEvents(true, { forward: true });
-  island.webContents.on('did-finish-load', () => {
-    replay(island);
-    placeIsland();
-    hideForTest(island);
-    island.showInactive();
+  island = w;
+  // Above the menu bar, on every Space, over full-screen apps.
+  w.setAlwaysOnTop(true, 'screen-saver');
+  w.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // The notch island lives in a large transparent window: clicks pass through except on the island itself.
+  if (!glass) w.setIgnoreMouseEvents(true, { forward: true });
+  w.webContents.on('did-finish-load', () => {
+    if (island !== w) return;
+    islandLoaded = true;
+    replay(w);
+    applyIslandGlass();
+    setIslandBounds(false);
+    hideForTest(w);
+    sendIsland(); // the page lays itself out for this screen, then says island:ready
   });
-  island.on('closed', () => {
-    island = null;
+  w.on('closed', () => {
+    if (island === w) island = null;
   });
-  island.loadFile(path.join(__dirname, 'renderer', 'island.html'));
+  w.loadFile(path.join(__dirname, 'renderer', 'island.html'));
+}
+
+function placeIsland() {
+  if (!app.isReady()) return;
+  const place = islandPlace();
+  const kind = place.notch ? 'notch' : 'glass';
+  if (!island || island.isDestroyed() || kind !== islandKind) {
+    createIsland(place);
+    return;
+  }
+  islandAt = place;
+  setIslandBounds(false);
+  sendIsland();
 }
 
 function setIslandActive(on) {
   islandActive = on;
+  if (on) placeIsland();
   sendIsland();
+  syncIsland();
 }
 
 let animating = false; // window bounds are mid-animation; do not save them
 
-// The window shrinks into the notch and hides; the island takes over the lyrics.
+// Where the window shrinks to and grows from: the notch, or the top centre of the island's screen.
+function islandSlot() {
+  const { display, notch: n } = islandAt || islandPlace();
+  const b = display.bounds;
+  const w = n ? Math.round(n.width) : 200;
+  const h = n ? Math.round(n.height) : 40;
+  return { x: Math.round(b.x + b.width / 2 - w / 2), y: b.y, width: w, height: h };
+}
+
+// The window shrinks into the island and hides; the island takes over the lyrics.
 function minimizeToIsland() {
   if (!win || !win.isVisible() || animating) return;
   if (!settings.island) return win.minimize();
   windowBounds = win.getBounds();
-  placeIsland(); // the island may live on another screen than last time
-  const { display, notch: n } = islandPlace();
-  const b = display.bounds;
-  const w = n ? Math.round(n.width) : 200;
-  const h = n ? Math.round(n.height) : 40;
+  setIslandActive(true); // places the island first: it may live on another screen than last time
   const saved = win.getBounds();
   animating = true;
   win.setMinimumSize(1, 1);
-  win.setBounds({ x: Math.round(b.x + b.width / 2 - w / 2), y: b.y, width: w, height: h }, true);
-  setIslandActive(true);
+  win.setBounds(islandSlot(), true);
   setTimeout(() => {
     if (win) {
       win.hide();
@@ -585,20 +861,16 @@ function minimizeToIsland() {
   }, 340);
 }
 
-// The window grows back out of the notch; the island tucks away.
+// The window grows back out of the island; the island tucks away.
 function restoreFromIsland() {
   if (!win) return createWindow();
   setIslandActive(false);
   if (win.isMinimized()) return win.restore();
   if (win.isVisible() || animating) return undefined;
-  const { display, notch: n } = islandPlace();
-  const b = display.bounds;
-  const w = n ? Math.round(n.width) : 200;
-  const h = n ? Math.round(n.height) : 40;
   const target = win.getBounds();
   animating = true;
   win.setMinimumSize(1, 1);
-  win.setBounds({ x: Math.round(b.x + b.width / 2 - w / 2), y: b.y, width: w, height: h });
+  win.setBounds(islandSlot());
   win.showInactive();
   win.setBounds(target, true);
   setTimeout(() => {
@@ -624,6 +896,9 @@ app.whenReady().then(() => {
   lyrics = createLyrics(path.join(app.getPath('userData'), 'lyrics-cache.json'));
   loadSettings();
   send('settings', settings);
+  try {
+    for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(offsetsFile(), 'utf8')))) offsets.set(k, Number(v) || 0);
+  } catch (err) {}
   ipcMain.handle('command', (_event, name) => command(name));
   ipcMain.handle('settings:set', (_event, patch) => setSettings({ ...settings, ...patch }));
   ipcMain.handle('settings:reset', () => setSettings(looks.DEFAULTS));
@@ -649,12 +924,35 @@ app.whenReady().then(() => {
     };
   });
   ipcMain.on('move:end', stopMoving);
+  // The vinyl sounds (app/assets/sounds), handed to the window as bytes.
+  ipcMain.handle('sound:get', (_event, name) => {
+    if (!/^[a-z-]+$/.test(String(name))) throw new Error('bad sound name');
+    return fs.readFileSync(path.join(__dirname, 'assets', 'sounds', `${name}.mp3`));
+  });
   ipcMain.on('window:minimize', minimizeToIsland);
   ipcMain.on('window:restore', restoreFromIsland);
-  ipcMain.on('island:hover', (_event, inside) => island && !TEST && island.setIgnoreMouseEvents(!inside, { forward: true }));
+  const fromIsland = (event) => !!island && !island.isDestroyed() && event.sender === island.webContents;
+  ipcMain.on('island:hover', (event, inside) => fromIsland(event) && !TEST && islandKind === 'notch' && island.setIgnoreMouseEvents(!inside, { forward: true }));
+  // The island's page has laid itself out for its screen: it may be shown.
+  ipcMain.on('island:ready', (event) => {
+    if (!fromIsland(event)) return;
+    islandReady = true;
+    syncIsland();
+  });
+  // The glass island asks for its size, and says whether it has anything to show; the window springs to it.
+  ipcMain.on('island:size', (event, w, h, show) => {
+    if (!fromIsland(event) || islandKind !== 'glass') return;
+    islandSize = { w: Math.max(120, Math.min(720, Number(w) || 200)), h: Math.max(GLASS_ROW_H, Math.min(220, Number(h) || GLASS_ROW_H)) };
+    islandWanted = !!show;
+    setIslandBounds(islandShown);
+    syncIsland();
+  });
+  ipcMain.handle('displays', () => islandScreens());
   ipcMain.on('nudge', (_event, delta) => {
     const value = Math.round(((offsets.get(song.key) || 0) + Number(delta || 0)) * 10) / 10;
+    offsets.delete(song.key); // re-insert so the most recently fixed songs are the ones kept
     offsets.set(song.key, value);
+    saveOffsets();
     send('offset', { key: song.key, value });
   });
   // ⇄: follow the next source instead (when several are open or playing).
@@ -723,13 +1021,19 @@ app.whenReady().then(() => {
     }
   }, 60);
   np.on('log', (line) => line && console.log('[now-playing]', line));
-  np.start();
+  if (!NO_NOWPLAYING) np.start();
   createWindow();
-  createIsland();
+  placeIsland();
+  // Screens come and go (a monitor plugged in, the lid closed): find the island's place again, and tell Settings.
+  let displayTimer = null;
   for (const evt of ['display-added', 'display-removed', 'display-metrics-changed']) {
     screen.on(evt, () => {
-      notchCache = undefined;
-      placeIsland();
+      clearTimeout(displayTimer);
+      displayTimer = setTimeout(() => {
+        screensCache = null;
+        placeIsland();
+        if (settingsWin && !settingsWin.isDestroyed()) settingsWin.webContents.send('displays', islandScreens());
+      }, 300);
     });
   }
 });

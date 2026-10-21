@@ -39,8 +39,23 @@ full-screen apps.
 - **Minimise into the notch:** the – at the top, or ⌘M. The window shrinks into the notch and a Dynamic Island
   takes over: a small lyric reel, the line being sung in focus and the next one waiting below, scrolling up on a
   spring with every line. Hover it for the title, ⏮ ⏯ ⏭ and Open. Click the cover, Open or the Dock icon to bring
-  the window back. On a screen without a notch (an external monitor, or Settings → *Island appears on → Window's
-  screen*), the island is a floating pill at the top with everything in one row: cover · lyric · equaliser.
+  the window back. **Settings → Island appears on** picks the screen: the MacBook notch, the window's screen, or
+  any connected screen by name (with three or four monitors, each one is listed). On a screen without a notch the
+  island is a native glass pill hanging from the top edge, with everything in one row (cover · lyric ·
+  equaliser), and it fades away when there is nothing to show.
+- **Vinyl (Settings → Vinyl):** a record's surface turning quietly under the music, fading in while it plays and
+  away when it pauses (Light / Worn / Scratched, and a volume). Real
+  recordings, public domain (CC0): see [app/assets/sounds/CREDITS.md](app/assets/sounds/CREDITS.md). It plays from the
+  app, so it works with any player, and the cover turns like a record.
+- **Singing along in the island:** one line at a time. The next line takes over once the current one has probably
+  been sung, early enough to read it before it is due; the line being sung fills with the cover's colour as it is
+  sung (word by word when the lyrics have word timing); after a break the coming line brightens to count you in.
+  Earlier / Later in the expanded island fix the timing, and FloatLyrics remembers the fix for that song.
+- **YouTube videos:** official music videos often have their own captions, timed to that very video (its intro,
+  spoken scenes and edit), which lyric databases cannot know. On youtube.com these come first, when they are the
+  lyrics; the LRCLIB recordings stay one click away as other versions (the **1/N** button), and are used when a
+  video has no such captions. The extension asks YouTube's player for them out of sight and leaves your caption
+  setting as it was. YouTube Music uses LRCLIB only.
 - **Several players at once:** FloatLyrics follows the one you started last, prefers a music player over a plain
   video when both play, and keeps a song you just paused. A **⇄** button appears when more than one is open;
   click it to follow another. Videos that are not songs say so, and the island stays tucked away for them.
@@ -79,6 +94,8 @@ any player ──▶ macOS Now Playing ──▶ app/nowplaying.js ──▶ app
   `videoTrack()`), looks up lyrics, and owns the window. The window is frameless, transparent and always on top,
   with native glass behind it from [electron-liquid-glass](https://github.com/Meridius-Labs/electron-liquid-glass).
 - **`app/lyrics.js`** asks [LRCLIB](https://lrclib.net) through the shared matcher and caches answers on disk.
+  For a youtube.com video, `captionLyrics()` in `extension/core.js` turns its own uploaded captions (sent on by
+  the extension's `probe.js`) into lyric lines; they lead when they mark singing or agree with LRCLIB's words.
 - **`app/renderer/`** draws the windows. `view.js` keeps the highlighted line on the music, `looks.js` defines the
   appearance options and their limits, `settings.html` is the Settings window, and `island.html` / `island.js`
   are the Dynamic Island ([docs/dynamic-island.md](docs/dynamic-island.md)).
@@ -96,7 +113,9 @@ against: [docs/dynamic-island.md](docs/dynamic-island.md).
 ## Lyrics source
 
 [LRCLIB](https://lrclib.net) is a free, open, crowd-sourced database of line-synced lyrics. Because anyone can
-add to it, candidates are scored on title, artist, duration and lyric length before one is shown.
+add to it, candidates are scored on title, artist, duration and lyric length before one is shown. On youtube.com,
+a video's own captions come first when they are its lyrics (see above). After updating, reload the extension in
+`chrome://extensions` and reload your YouTube tabs.
 
 ## The browser extension
 
@@ -107,13 +126,15 @@ Chrome's own title bar, and it needs no app install. Load it unpacked from `chro
 ## Develop
 
 ```sh
-npm test           # matcher, LRC parsing, appearance settings, live LRCLIB lookups
-npm run test:app   # plays a song in a test browser and drives the app: sync, themes, settings, controls
+npm test               # matcher, LRC parsing, captions, appearance settings, live LRCLIB lookups
+npm run test:app       # plays a song in a test browser and drives the app: sync, themes, settings, controls
+npm run test:island    # the island on every connected screen, back and forth, and play/pause storms
+npm run test:captions  # a YouTube music video's own captions become its lyrics
 ```
 
-`npm run test:app` briefly plays music at 2% volume in a test browser that has a temporary copy of the extension
-on its own port (47299). A FloatLyrics you have open is left alone. It checks that it is controlling its own
-test player before pressing any button.
+The end-to-end tests play music, muted, in a minimised test browser with a temporary copy of the extension on its
+own port, and drive an invisible test copy of the app. A FloatLyrics you have open is left alone, and the test
+copies never read or control macOS Now Playing, so your own music is never paused.
 
 ## Roadmap
 
@@ -125,7 +146,8 @@ test player before pressing any button.
 ## Credits
 
 Lyrics by the [LRCLIB](https://github.com/tranxuanthang/lrclib) community. Animation springs by
-[Motion](https://motion.dev) (MIT). Now Playing access by
+[Motion](https://motion.dev) (MIT). Vinyl sounds by TRP and nervousneal on [Freesound](https://freesound.org)
+(CC0). Now Playing access by
 [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter). Native glass by
 [electron-liquid-glass](https://github.com/Meridius-Labs/electron-liquid-glass).
 

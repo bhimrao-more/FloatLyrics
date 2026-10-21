@@ -36,8 +36,17 @@ DynamicNotchKit's states and floating fallback are the model; no code is copied 
   (above the menu bar), on all Spaces and over full-screen apps. It is click-through
   (`setIgnoreMouseEvents(true, { forward: true })`); the renderer watches forwarded mouse moves and turns clicks
   back on only while the pointer is over the island.
-- **No notch** (external display, lid closed): the island floats as a pill 6px below the top of the main display,
-  as DynamicNotchKit does.
+- **Which screen** (Settings → *Island appears on*): the MacBook notch (the main screen when there is none), the
+  window's screen, or any connected screen by name. AppKit is asked once for every screen's name and notch
+  (`NSScreen.localizedName`, `safeAreaInsets`), matched to Electron's displays by their frames, and asked again
+  when screens change. A chosen screen that is unplugged stays chosen (remembered by name) and the island goes back
+  there when it returns; meanwhile it uses the notch or the main screen.
+- **Switching screens.** A notch island and a glass island are different windows, so changing kind makes a fresh
+  window. It is never shown before its page has laid itself out for its screen (`island:ready`), and the screen's
+  geometry goes to it directly rather than being replayed from the last screen. Before this, a new glass window
+  could first draw the old notch layout and stay that way: a black island cropped inside a small glass window.
+  `npm run test:island` moves the island across every screen and back while sampling frames, and storms
+  play/pause on both kinds.
 - **Hand-over animation.** On minimise the window animates its bounds into the notch rectangle
   (`setBounds(…, animate)`), hides, and the island activates. Restore runs the reverse.
 
@@ -64,8 +73,9 @@ DynamicNotchKit's states and floating fallback are the model; no code is copied 
 ## The pill (screens without a notch)
 
 One row, 40px tall (taller when a line wraps): round cover on the left, the lyric scrolling up inside the row,
-equaliser on the right. Hover drops the controls row below. It appears when the island's screen has no notch:
-lid closed, or Settings → *Island appears on → Window's screen* with the window on an external monitor.
+equaliser on the right. Hover drops the controls row below. It appears when the island's screen has no notch: an
+external monitor chosen in Settings → *Island appears on* (or the window's screen), or the lid closed. Its shape
+and glass are described under *Glass island* below.
 
 ## States and sizes (`app/renderer/island.js`)
 
@@ -85,3 +95,33 @@ lid closed, or Settings → *Island appears on → Window's screen* with the win
   setting applies here too; themes do not.
 - **Shape.** The bottom corners round with the size (10px idle, 12px compact, 22px lyric, 26px expanded). The
   notch's concave top corners are drawn as two 10px radial-gradient "ears" that travel with the edges.
+
+## Glass island (screens without a notch)
+
+The window takes the island's own size and wears native macOS glass (`electron-liquid-glass`, corner radius 16).
+It sits 16px above the screen's top edge, so the top corners are hidden: it hangs from the top like a notch, with
+only the bottom corners rounded.
+
+A version that curved into the top edge at both corners, like NotchNook (SwiftUI `glassEffect(in:)` in a notch
+outline, and before that a layer mask on the glass view), was tried on 2026-10-20. The user preferred this one, so
+it was taken out.
+
+It follows the window's theme, text size, clarity and cover colour live; the glass tint turns light for the Light
+theme. It resizes on a spring (stiffness 380, damping 27) stepped by the main process, the glass following the
+window; small width changes (18px or less) do not resize it. When there is nothing to show
+(paused for 15s, not a song) it fades away instead of leaving empty glass at the top of the screen.
+
+## Singing along: timing (`extension/core.js`)
+
+One line at a time, so the timing does the reading-ahead:
+- `singingSpan`: LRC only gives each line's start. Estimate when it has been sung from its length (about 10
+  characters a second) or from its word times, never past the next line.
+- `handoverAt`: the next line takes over once the current one has probably been sung. After a pause that is at
+  most 1.2s before it is due; when lines run on, 0.35s; never in a line's first moment on screen. (Karaoke tools
+  call this an anticipation buffer; subtitle practice is about 1s minimum on screen and 12–17 characters a second
+  reading speed.)
+- `progressAt`: the karaoke fill. It follows word times when the lyrics have them (enhanced LRC
+  `<mm:ss.xx>` tags) and otherwise runs evenly over the estimated singing span. Sung words take the cover's colour.
+- After an instrumental break the coming line brightens over its last 1.5s: a count-in.
+- The cover is a record: round, turning while playing, with a ring that fills over the song's length.
+

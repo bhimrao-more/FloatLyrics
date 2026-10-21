@@ -186,7 +186,6 @@ button {
   line-height: 1.22;
   color: var(--dim);
   filter: blur(0.6px);
-  transform: scale(0.95);
   text-wrap: balance;
   overflow-wrap: anywhere;
   text-shadow: 0 1px 10px var(--shadow);
@@ -196,8 +195,18 @@ button {
 .fl-line.is-active {
   color: var(--fg);
   filter: none;
-  transform: none;
   text-shadow: 0 1px 14px var(--shadow-active);
+}
+/* The line being sung fills with light up to --p as it is sung (view.js), word by word when timing allows. */
+.fl-line.is-active.is-sweep {
+  color: transparent;
+  text-shadow: none;
+  background: linear-gradient(90deg, var(--fg) calc(var(--p, 0) * 112% - 12%), color-mix(in srgb, var(--fg) 58%, transparent) calc(var(--p, 0) * 112%));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  filter: drop-shadow(0 1px 10px var(--shadow-active));
 }
 .fl.no-focus .fl-line {
   filter: none;
@@ -307,6 +316,18 @@ button {
 }
 .fl-thumb.is-shown {
   opacity: 1;
+}
+/* Vinyl on: the cover becomes a record, turning while the music plays. */
+.fl.vinyl .fl-thumb {
+  border-radius: 50%;
+  animation: fl-spin 9s linear infinite;
+  box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.35), 0 0 0 2.5px rgba(255, 255, 255, 0.18);
+}
+.fl.vinyl:not(.is-playing) .fl-thumb {
+  animation-play-state: paused;
+}
+@keyframes fl-spin {
+  to { rotate: 360deg; }
 }
 .fl-thumb,
 .fl-meta {

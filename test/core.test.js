@@ -1,7 +1,7 @@
 // Run with: npm test   (the "live" tests call the real LRCLIB API)
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { cleanTitle, primaryArtist, videoTrack, parseLrc, indexAt, findLyrics } = require('../extension/core.js');
+const { cleanTitle, primaryArtist, videoTrack, parseLrc, indexAt, progressAt, singingSpan, handoverAt, captionLyrics, captionsUsable, findLyrics } = require('../extension/core.js');
 
 async function fetchJson(url, retried) {
   const res = await fetch(url, { headers: { 'X-User-Agent': 'FloatLyrics tests' } });
@@ -39,6 +39,65 @@ test('videoTrack turns a youtube.com video into a track', () => {
   assert.deepEqual(v('Kesariya - Brahmāstra | Ranbir Kapoor | Alia Bhatt | Pritam | Arijit Singh', 'Sony Music India'), { title: 'Kesariya', artist: 'Sony Music India' });
 });
 
+test('videoTrack drops trailing packaging and years from "Artist - Song - Official - 1984"', () => {
+  assert.deepEqual(videoTrack('Sade - Smooth Operator - Official - 1984', 'SadeVEVO'), { title: 'Smooth Operator', artist: 'Sade' });
+  assert.deepEqual(videoTrack('Artist - Song - Remastered - 2009', 'Artist'), { title: 'Song', artist: 'Artist' });
+});
+
+// A music video's captions, in the shapes YouTube uses: sound descriptions, ♪ around what is sung, capitals,
+// a host talking at the end. (Made-up lyrics.)
+const cue = (t, d, text) => ({ t, d, text });
+const videoCues = [
+  cue(1, 2, '(soft guitar music)'),
+  cue(4, 2, '[CROWD CHEERING]'),
+  cue(12, 3, '♪ THE KETTLE SINGS AT NINE ♪'),
+  cue(15, 3, "♪ AND I KNOW THE\nMORNING'S MINE ♪"),
+  cue(18, 3, '♪ (OH YEAH) PAPER SKY ♪'),
+  cue(30, 4, '♪ ♪'),
+  cue(40, 3, '♪ The kettle sings at nine ♪'),
+  cue(43, 2, '♪ (gentle humming) ♪'),
+  cue(50, 2, 'HOST: THAT WAS LOVELY'),
+];
+const videoRef = [
+  { t: 10, text: 'The kettle sings at nine' },
+  { t: 13, text: "And I know the morning's mine" },
+  { t: 16, text: 'Paper sky (oh yeah)' },
+];
+
+test("captionLyrics turns a music video's captions into its lyrics, timed to the video", () => {
+  const c = captionLyrics(videoCues, videoRef);
+  assert.deepEqual(
+    c.lines.map((l) => [l.t, l.text]),
+    [
+      [12, 'The kettle sings at nine'],
+      [15, "And I know the morning's mine"],
+      [18, '(Oh yeah) paper sky'],
+      [21, ''], // the music carries on alone until the next sung line
+      [40, 'The kettle sings at nine'],
+      [43, ''],
+    ],
+  );
+  assert.equal(c.count, 4);
+  assert.ok(c.sung > 0.5);
+  assert.equal(c.match, 1);
+  assert.equal(captionsUsable(c), true);
+});
+
+test('captions that are not the lyrics are not used', () => {
+  // a translation: marked as sung, but none of its words are in the lyrics
+  const other = [{ t: 1, text: 'La bouilloire chante à neuf heures' }, { t: 2, text: 'Et je sais que le matin est à moi' }, { t: 3, text: 'Ciel de papier' }];
+  assert.equal(captionsUsable(captionLyrics(videoCues, other)), false);
+  // nothing to compare with: trusted when they mark singing
+  assert.equal(captionsUsable(captionLyrics(videoCues, null)), true);
+  // plain captions with no ♪ are trusted only when they agree with the lyrics
+  const plain = videoRef.concat(videoRef).map((l, i) => cue(i * 4, 3, l.text));
+  assert.equal(captionsUsable(captionLyrics(plain, null)), false);
+  assert.equal(captionsUsable(captionLyrics(plain, videoRef)), true);
+  // too short to be a song's lyrics
+  assert.equal(captionsUsable(captionLyrics(videoCues.slice(0, 4), videoRef)), false);
+  assert.equal(captionLyrics([], null), null);
+});
+
 test('primaryArtist takes the lead artist', () => {
   assert.equal(primaryArtist('Arijit Singh, Mithoon'), 'Arijit Singh');
   assert.equal(primaryArtist('The Kid LAROI & Justin Bieber'), 'The Kid LAROI');
@@ -52,6 +111,34 @@ test('parseLrc handles fractions, repeated stamps and offset', () => {
     [[5.1, 'first'], [12.5, 'second'], [20, ''], [30, 'chorus'], [60, 'chorus']],
   );
   assert.equal(parseLrc('[offset:500]\n[00:10.00] a')[0].t, 9.5);
+});
+
+test('parseLrc keeps per-word times from enhanced LRC', () => {
+  const [line] = parseLrc('[00:12.00] <00:12.00>Look <00:12.40>at <00:12.70>the <00:13.10>stars');
+  assert.equal(line.text, 'Look at the stars');
+  assert.deepEqual(line.words.map((w) => [w.t, w.text.trim()]), [[12, 'Look'], [12.4, 'at'], [12.7, 'the'], [13.1, 'stars']]);
+  assert.equal(parseLrc('[00:05.00] plain line')[0].words, undefined);
+});
+
+test('progressAt follows words when it has them, time otherwise', () => {
+  const plain = { t: 10, text: 'abcd' };
+  assert.equal(progressAt(plain, 14, 12), 0.5);
+  const worded = parseLrc('[00:10.00] <00:10.00>aa <00:11.00>bbbbbb')[0];
+  assert.ok(progressAt(worded, 13, 10.99) < 0.35, 'first short word nearly done');
+  assert.ok(progressAt(worded, 13, 11) > 0.3 && progressAt(worded, 13, 11) < 0.35, 'second word just starting');
+  assert.equal(progressAt(worded, 13, 20), 1);
+});
+
+test('handoverAt: early after a pause, just ahead when lines run on', () => {
+  const short = { t: 10, text: 'Hey there' }; // ~0.9s to sing
+  // A long pause before the next line: it comes in 1.2s ahead, well after the short line was sung.
+  assert.equal(handoverAt(short, { t: 20, text: 'next' }), 18.8);
+  // Back-to-back lines: just 0.35s ahead.
+  const long = { t: 10, text: 'On a dark desert highway, cool wind in my hair' }; // ~4.6s
+  assert.equal(handoverAt(long, { t: 14.2, text: 'next' }), 13.85);
+  // Never in a line's first moment on screen.
+  assert.ok(handoverAt({ t: 10, text: 'a' }, { t: 11, text: 'b' }) >= 10.5);
+  assert.ok(singingSpan(long, { t: 30 }) > 4 && singingSpan(long, { t: 30 }) < 5);
 });
 
 test('indexAt finds the line being sung', () => {

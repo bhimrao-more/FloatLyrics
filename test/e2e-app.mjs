@@ -71,7 +71,7 @@ try {
   }
 
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'floatlyrics-test-'));
-  appProc = spawn(electronPath, ['.'], { cwd: ROOT, env: { ...process.env, FL_DEBUG_PORT: String(PORT), FL_USER_DATA: userData, FL_BRIDGE_PORT: String(BRIDGE_PORT), FL_TEST: '1' }, stdio: 'ignore' });
+  appProc = spawn(electronPath, ['.'], { cwd: ROOT, env: { ...process.env, FL_DEBUG_PORT: String(PORT), FL_USER_DATA: userData, FL_BRIDGE_PORT: String(BRIDGE_PORT), FL_TEST: '1', ...(withExtension ? { FL_NO_NOWPLAYING: '1' } : {}) }, stdio: 'ignore' });
   for (let i = 0; i < 60 && !appBrowser; i++) {
     await sleep(500);
     appBrowser = await puppeteer.connect({ browserURL: `http://127.0.0.1:${PORT}`, defaultViewport: null }).catch(() => null);
@@ -236,6 +236,27 @@ try {
     await pane.close();
   }
 
+  // Vinyl: record crackle starts with the music when switched on, and fades out when switched off.
+  await win.evaluate(() => window.floatlyrics.setSettings({ vinyl: 'worn' }));
+  await sleep(2000);
+  let vs = await win.evaluate(() => window.__floatlyrics.vinyl());
+  check(vs.wear === 'worn' && vs.on && vs.sounding && vs.gain > 0.2, 'vinyl: the record turns under the music', JSON.stringify(vs));
+  const spinning = await win.evaluate(() => getComputedStyle(document.getElementById('thumb')).animationName);
+  check(spinning === 'fl-spin', 'vinyl turns the cover into a spinning record', spinning);
+  // It follows the music: silent while paused, back when playing.
+  await page.evaluate(() => document.querySelector('video').pause());
+  await sleep(2500);
+  vs = await win.evaluate(() => window.__floatlyrics.vinyl());
+  check(!vs.playing && !vs.on && vs.gain < 0.05, 'vinyl: the record falls quiet when the music pauses', `gain=${vs.gain.toFixed(3)}`);
+  await page.evaluate(() => document.querySelector('video').play());
+  await sleep(2500);
+  vs = await win.evaluate(() => window.__floatlyrics.vinyl());
+  check(vs.playing && vs.on && vs.gain > 0.2, 'vinyl: and comes back when it plays', `gain=${vs.gain.toFixed(3)}`);
+  await win.evaluate(() => window.floatlyrics.setSettings({ vinyl: 'off' }));
+  await sleep(1200);
+  vs = await win.evaluate(() => window.__floatlyrics.vinyl());
+  check(!vs.sounding, 'vinyl off stops the record sound', JSON.stringify(vs));
+
   // Minimise: the window goes into the notch and the island carries the lyrics.
   await press(win, '#min');
   const islandTarget = await appBrowser.waitForTarget((t) => t.url().endsWith('/renderer/island.html'), { timeout: 5000 }).catch(() => null);
@@ -260,9 +281,15 @@ try {
       await sleep(500);
       const [i, a] = [await readIsland(), await read()];
       n++;
-      if (i.text === a.text) same++;
+      // The island may already have handed over to the next line (shown as "soon") so it can be read in time.
+      if (i.text === a.text || (i.soon && !i.text)) same++;
     }
-    check(same / n >= 0.8, 'island shows the same line as the lyrics clock', `${same}/${n} samples agree`);
+    check(same / n >= 0.8, 'island shows the same line as the lyrics clock (or the next, handed over early)', `${same}/${n} samples agree`);
+    // Appearance changes reach the island live.
+    await win.evaluate(() => window.floatlyrics.setSettings({ theme: 'light' }));
+    st = await islandWait((x) => x.theme === 'light', 3000);
+    check(st.theme === 'light', 'island follows the theme live', `island mode=${st.mode}`);
+    await win.evaluate(() => window.floatlyrics.setSettings({ theme: 'cover' }));
     st = await islandWait((x) => x.state === 'lyric', 8000);
     if (SHOT) {
       await isl.screenshot({ path: SHOT.replace(/\.png$/, '-island.png'), omitBackground: true });
@@ -274,9 +301,10 @@ try {
         await isl.screenshot({ path: SHOT.replace(/\.png$/, `-reel-${String(ms).padStart(3, '0')}.png`), omitBackground: true, clip: { x: 0, y: 0, width: 640, height: 130 } });
       }
     }
-    await isl.mouse.move(320, 14);
+    const c = await isl.evaluate(() => { const b = document.getElementById('island').getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + Math.min(14, b.height / 2) }; });
+    await isl.mouse.move(c.x, c.y);
     await sleep(120);
-    await isl.mouse.move(322, 16);
+    await isl.mouse.move(c.x + 2, c.y + 1);
     st = await islandWait((x) => x.state === 'expanded', 3000);
     check(st.state === 'expanded', 'hovering the island expands it');
     await sleep(700);

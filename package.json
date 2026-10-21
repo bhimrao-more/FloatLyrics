@@ -1,7 +1,7 @@
 {
   "name": "floatlyrics",
   "productName": "FloatLyrics",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "description": "Time-synced lyrics in a small always-on-top glass window for whatever is playing on your Mac.",
   "license": "MIT",
@@ -11,6 +11,8 @@
     "test": "node --test test/core.test.js test/looks.test.js",
     "test:app": "node test/e2e-app.mjs",
     "test:e2e": "node test/e2e-ytmusic.mjs",
+    "test:island": "node test/e2e-island.mjs",
+    "test:captions": "node test/e2e-captions.mjs",
     "icon": "node scripts/make-icon.mjs",
     "package": "node scripts/package-mac.mjs"
   },

@@ -197,9 +197,129 @@
     };
   }
 
+  /* ---------- the video's own captions (youtube.com) ----------
+   * Official music videos usually carry uploaded captions: the lyrics, timed to this very video (its intro,
+   * spoken scenes and edit included), which no lyrics database can know. YouTube only serves them to its own
+   * player, so: listen for the player's caption downloads, and while the FloatLyrics app is running, ask the player
+   * to load them once per video, out of sight, putting the person's own caption setting back straight after.
+   * Auto-generated (speech recognition) captions are never used: they are not lyrics.
+   */
+  const captions = new Map(); // videoId → { videoId, lang, cues: [{ t, d, text }] }
+  const asked = new Set(); // videos we already asked the player for
+  const videoId = () => (site === 'youtube' && location.pathname === '/watch' ? new URLSearchParams(location.search).get('v') || '' : '');
+
+  function onTimedText(url, body) {
+    try {
+      const u = new URL(url, location.href);
+      const id = u.searchParams.get('v');
+      if (!id || u.searchParams.get('kind') === 'asr' || !body) return;
+      const json = JSON.parse(body);
+      const cues = [];
+      for (const e of json.events || []) {
+        if (!e.segs) continue;
+        const text = e.segs.map((g) => g.utf8 || '').join('');
+        if (text.trim()) cues.push({ t: (e.tStartMs || 0) / 1000, d: (e.dDurationMs || 0) / 1000, text });
+      }
+      if (cues.length && !captions.has(id)) {
+        captions.set(id, { videoId: id, lang: u.searchParams.get('lang') || '', cues });
+        if (captions.size > 20) captions.delete(captions.keys().next().value);
+        document.dispatchEvent(new CustomEvent('floatlyrics:captions', { detail: JSON.stringify(captions.get(id)) }));
+      }
+    } catch (err) {}
+  }
+  if (site === 'youtube') {
+    const isCaptions = (url) => typeof url === 'string' && url.includes('/api/timedtext');
+    const nativeFetch = window.fetch;
+    window.fetch = function fetch(input) {
+      const result = nativeFetch.apply(this, arguments);
+      try {
+        const url = typeof input === 'string' ? input : input && input.url;
+        if (isCaptions(url)) result.then((r) => r.clone().text().then((t) => onTimedText(url, t))).catch(() => {});
+      } catch (err) {}
+      return result;
+    };
+    const open = XMLHttpRequest.prototype.open;
+    const send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (method, url) {
+      try {
+        this.__flUrl = String(url);
+      } catch (err) {}
+      return open.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.send = function () {
+      try {
+        if (isCaptions(this.__flUrl)) {
+          this.addEventListener('load', () => {
+            try {
+              onTimedText(this.__flUrl, typeof this.response === 'string' ? this.response : this.responseText);
+            } catch (err) {}
+          });
+        }
+      } catch (err) {}
+      return send.apply(this, arguments);
+    };
+  }
+
+  // Uploaded caption tracks, best first: the one YouTube would pick for this video's audio, then English.
+  function uploadedTracks(p) {
+    const list = (p.getOption && p.getOption('captions', 'tracklist')) || [];
+    const ups = list.filter((t) => t && t.kind !== 'asr' && t.languageCode);
+    const pr = p.getPlayerResponse && p.getPlayerResponse();
+    const r = pr && pr.captions && pr.captions.playerCaptionsTracklistRenderer;
+    const audio = r && r.audioTracks && r.audioTracks[r.defaultAudioTrackIndex || 0];
+    const preferred = audio && r.captionTracks && r.captionTracks[audio.defaultCaptionTrackIndex];
+    const rank = (t) => (preferred && t.languageCode === preferred.languageCode && preferred.kind !== 'asr' ? 0 : /^en/.test(t.languageCode) ? 1 : 2);
+    return ups.sort((a, b) => rank(a) - rank(b));
+  }
+
+  async function fetchCaptions(id) {
+    const p = document.getElementById('movie_player');
+    if (!p || !p.getOption || !p.setOption) return;
+    const own = p.getOption('captions', 'track') || {};
+    const theirs = !!own.languageCode; // captions already on: the player has fetched them, or will
+    if (theirs) return;
+    const quiet = document.createElement('style');
+    quiet.textContent = '.ytp-caption-window-container, .caption-window { visibility: hidden !important; }';
+    document.documentElement.appendChild(quiet);
+    try {
+      p.loadModule('captions');
+      await new Promise((r) => setTimeout(r, 300)); // the track list arrives with the module
+      const track = uploadedTracks(p)[0];
+      if (!track) return;
+      p.setOption('captions', 'track', track);
+      for (let i = 0; i < 40 && !captions.has(id); i++) await new Promise((r) => setTimeout(r, 100));
+    } catch (err) {
+    } finally {
+      try {
+        p.setOption('captions', 'track', {});
+        p.unloadModule('captions');
+      } catch (err) {}
+      setTimeout(() => quiet.remove(), 500);
+    }
+  }
+
+  // Once per video, when it plays (not an advert) and the FloatLyrics app is listening (content.js marks <html>).
+  function maybeFetchCaptions(state) {
+    const id = videoId();
+    if (!id || state.ad || state.paused || captions.has(id) || asked.has(id)) return;
+    if (document.documentElement.dataset.floatlyricsApp !== '1') return;
+    const p = document.getElementById('movie_player');
+    const pr = p && p.getPlayerResponse && p.getPlayerResponse();
+    const vd = (p && p.getVideoData && p.getVideoData()) || {};
+    if (!pr || (vd.video_id && vd.video_id !== id)) return; // the player is still on an advert or the last video
+    const tracks = (pr.captions && pr.captions.playerCaptionsTracklistRenderer && pr.captions.playerCaptionsTracklistRenderer.captionTracks) || [];
+    asked.add(id);
+    if (tracks.some((t) => t.kind !== 'asr')) fetchCaptions(id);
+  }
+
   function report() {
     try {
-      document.dispatchEvent(new CustomEvent('floatlyrics:state', { detail: JSON.stringify(snapshot()) }));
+      const state = snapshot();
+      if (site === 'youtube') {
+        state.videoId = videoId();
+        maybeFetchCaptions(state);
+      }
+      document.dispatchEvent(new CustomEvent('floatlyrics:state', { detail: JSON.stringify(state) }));
     } catch (err) {}
   }
 

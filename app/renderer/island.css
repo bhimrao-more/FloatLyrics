@@ -1,13 +1,18 @@
 /*
- * The Dynamic Island around the MacBook notch. Pure black so it reads as the notch growing. Its outline and the
- * lyric reel move on Motion springs (island.js); the rows' own fades use a long ease-out, Apple's curve for
- * things arriving (--ease-out).
+ * The Dynamic Island. Two looks:
+ *  - .notched: pure black around the MacBook notch, so it reads as the notch growing;
+ *  - .glassy (screens without a notch): native macOS glass behind (main.js), with the window's theme laid over it
+ *    (cover colour, veil, text colour), hanging from the top edge in one row.
+ * Shape and lyric reel move on Motion springs (island.js); fades use Apple's long ease-out (--ease-out).
  */
 :root {
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, "Noto Sans", "Noto Sans Devanagari", sans-serif;
-  --nh: 37px; /* height of the notch row */
+  --nh: 37px; /* the top row: the notch, or the glass island's single row */
+  --inset: 0px; /* glass: the strip of window hidden above the screen's top edge */
   --accent: #fff; /* from the cover */
   --text-scale: 1;
+  --clarity: 1;
+  --cover: 1;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 }
 html,
@@ -23,14 +28,39 @@ body {
   cursor: default;
 }
 
+/* Theme colours. The notch island is always the dark set; the glass island follows the theme. */
+body {
+  --fg: #fff;
+  --fg-rgb: 255 255 255;
+  --sub: rgba(255, 255, 255, 0.55);
+  --veil: 0 0 0;
+  --veil-top: 0.12;
+  --veil-bottom: 0.22;
+  --art-a: 0.55;
+  --art-b: 0.3;
+}
+body.glass[data-theme="clear"] { --art-a: 0.22; --art-b: 0.12; --veil-top: 0.04; --veil-bottom: 0.1; }
+body.glass[data-theme="tinted"] { --art-a: 0.5; --art-b: 0.22; --veil-top: 0.4; --veil-bottom: 0.5; }
+body.glass[data-theme="graphite"] { --art-a: 0; --art-b: 0; --veil: 28 28 32; --veil-top: 0.42; --veil-bottom: 0.52; }
+body.glass[data-theme="light"] {
+  --fg: #141418;
+  --fg-rgb: 20 20 24;
+  --sub: rgba(20, 20, 24, 0.55);
+  --veil: 250 250 252;
+  --veil-top: 0.45;
+  --veil-bottom: 0.55;
+  --art-a: 0.4;
+  --art-b: 0.2;
+}
+
 .island {
   position: absolute;
   top: 0;
   left: 50%;
-  width: 200px; /* island.js springs the size from here */
+  width: 200px; /* the notch island springs its size from here (island.js) */
   height: 37px;
   translate: -50% 0;
-  color: #fff;
+  color: var(--fg);
   transition: opacity 0.3s var(--ease-out);
 }
 .island[data-state="hidden"] {
@@ -60,15 +90,75 @@ body {
   right: -10px;
   background: radial-gradient(circle at 100% 100%, transparent 9.5px, #000 10px);
 }
-/* No notch (external display, lid closed): a floating pill just below the top edge. */
-.island.floating {
-  top: 6px;
+
+/* Glass: the window is the island. It fills the window below the hidden top strip; the native glass shows
+   through, tinted by the cover and the theme's veil. */
+.island.glassy {
+  top: var(--inset);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: auto;
+  height: auto;
+  translate: none;
 }
-.island.floating .shell {
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+.island.glassy .shell {
+  background: transparent;
+  border-radius: 0;
+}
+.gbg,
+.gdim {
+  position: absolute;
+  inset: 0;
+  display: none;
+}
+.island.glassy .gbg,
+.island.glassy .gdim {
+  display: block;
+}
+.gbg {
+  overflow: hidden;
+}
+.gart {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 140%;
+  aspect-ratio: 1;
+  translate: -50% -50%;
+  object-fit: cover;
+  opacity: 0;
+  filter: blur(26px) saturate(1.8);
+  transition: opacity 1s var(--ease-out);
+}
+.gart.b {
+  left: 85%;
+  width: 90%;
+  mix-blend-mode: screen;
+  filter: blur(32px) saturate(2.1);
+}
+.gart.is-shown {
+  opacity: min(0.9, calc(var(--art-a) * var(--cover)));
+}
+.gart.b.is-shown {
+  opacity: min(0.6, calc(var(--art-b) * var(--cover)));
+}
+.island.glassy .shell::after {
+  /* a hairline rim along the sides and bottom, where glass catches the light */
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.18), inset 1px 0 0 rgba(255, 255, 255, 0.06), inset -1px 0 0 rgba(255, 255, 255, 0.06);
+}
+.gdim {
+  background: linear-gradient(
+    rgb(var(--veil) / min(0.92, calc(var(--veil-top) * var(--clarity)))),
+    rgb(var(--veil) / min(0.95, calc(var(--veil-bottom) * var(--clarity))))
+  );
 }
 
-/* Notch row: cover on the left ear, equaliser on the right. */
+/* The top row: cover on the left, equaliser on the right (around the notch, or either end of the glass row). */
 .top {
   position: absolute;
   top: 0;
@@ -81,25 +171,69 @@ body {
   padding: 0 13px;
   transition: opacity 0.3s var(--ease-out) 0.08s;
 }
+.island.glassy .top {
+  padding: 0 10px;
+}
 .island[data-state="idle"] .top,
 .island[data-state="hidden"] .top {
   opacity: 0;
   transition-delay: 0s;
 }
-.art {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  object-fit: cover;
-  background: #222;
+/* The cover as a record: round, spinning while the song plays, with a ring that fills over the song's length. */
+.disc {
+  position: relative;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
   cursor: pointer;
   transition: transform 0.5s var(--ease-out);
 }
+.island.glassy .disc {
+  width: 30px;
+  height: 30px;
+}
+.island[data-state="expanded"] .disc {
+  transform: scale(1.08);
+}
+.ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(var(--accent) calc(var(--song, 0) * 1turn), rgb(var(--fg-rgb) / 0.18) 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+}
+.island.glassy[data-theme="light"] .ring {
+  background: conic-gradient(var(--fg) calc(var(--song, 0) * 1turn), rgb(var(--fg-rgb) / 0.18) 0);
+}
+.art {
+  width: calc(100% - 6px);
+  height: calc(100% - 6px);
+  border-radius: 50%;
+  object-fit: cover;
+  background: rgba(127, 127, 127, 0.3);
+  animation: spin 9s linear infinite;
+}
+.disc::after {
+  /* the record's centre hole */
+  content: "";
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.75);
+  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.35);
+}
+.island.paused .art {
+  animation-play-state: paused;
+}
+@keyframes spin {
+  to { rotate: 360deg; }
+}
 .art:not([src]) {
   visibility: hidden;
-}
-.island[data-state="expanded"] .art {
-  transform: scale(1.1);
 }
 .bars {
   display: flex;
@@ -115,6 +249,12 @@ body {
   transform: scaleY(0.3);
   animation: eq 0.85s ease-in-out infinite alternate;
 }
+.island.glassy[data-theme="light"] .bars i {
+  background: var(--fg);
+}
+.island.glassy[data-theme="light"] {
+  --sung: color-mix(in srgb, var(--accent) 45%, #000);
+}
 .bars i:nth-child(2) { animation-duration: 0.62s; animation-delay: -0.3s; }
 .bars i:nth-child(3) { animation-duration: 0.95s; animation-delay: -0.6s; }
 .bars i:nth-child(4) { animation-duration: 0.7s; animation-delay: -0.15s; }
@@ -127,7 +267,7 @@ body {
   to { transform: scaleY(1); }
 }
 
-/* The lyric reel: a column of every line, slid upward on a spring so the line being sung sits at the top. */
+/* The lyric reel. Notch: below the notch row. Glass: inside the single row, between cover and equaliser. */
 .lyric {
   position: absolute;
   top: var(--nh);
@@ -135,18 +275,27 @@ body {
   right: 0;
   bottom: 0;
   overflow: hidden;
-  /* soft edges: lines leave upward and arrive from below without hard cuts */
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 8px, #000 calc(100% - 6px), transparent 100%);
   mask-image: linear-gradient(to bottom, transparent 0, #000 8px, #000 calc(100% - 6px), transparent 100%);
 }
 .island[data-state="expanded"] .lyric {
   bottom: 48px;
 }
+.island.glassy .lyric {
+  top: 0;
+  bottom: 0;
+  left: 46px;
+  right: 42px;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 7px, #000 calc(100% - 7px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 7px, #000 calc(100% - 7px), transparent 100%);
+}
 .reel {
   position: absolute;
   top: 6px;
   left: 50%;
-  will-change: transform;
+}
+.island.glassy .reel {
+  top: 0;
 }
 .row,
 .measure {
@@ -160,70 +309,50 @@ body {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+.glass .row,
+.glass .measure {
+  font-size: calc(15px * var(--text-scale));
+}
+/* Rows only move and fade; none grows. The one being sung is filled with light up to --p (the karaoke sweep). */
 .row {
   padding-bottom: 4px;
-  color: #fff;
+  color: rgb(var(--fg-rgb) / 0.42);
   opacity: 0;
-  transform: scale(0.84);
-  transform-origin: 50% 0;
-  filter: blur(3px);
-  transition: opacity 0.45s var(--ease-out), transform 0.6s var(--ease-out), filter 0.45s var(--ease-out);
+  filter: blur(4px);
+  will-change: transform;
+  transition: opacity 0.5s var(--ease-out), filter 0.5s var(--ease-out), color 0.5s var(--ease-out);
+}
+.island.glassy .row {
+  padding-bottom: 0;
 }
 .row.is-now {
+  /* sung words take the cover's colour, the rest stay bright: classic karaoke, readable from the first word */
   opacity: 1;
-  transform: none;
   filter: none;
+  color: transparent;
+  background: linear-gradient(
+    90deg,
+    var(--sung, var(--accent)) calc(var(--p, 0) * 108% - 8%),
+    rgb(var(--fg-rgb) / 0.94) calc(var(--p, 0) * 108%)
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 .row.is-soon {
-  opacity: 0.46;
-  transform: scale(0.94);
+  /* waiting to be sung: dim, brightening over the last moments before it is due (--c, the count-in) */
+  opacity: 1;
   filter: none;
+  color: rgb(var(--fg-rgb) / calc(0.5 + 0.35 * var(--c, 0)));
+  transition: opacity 0.5s var(--ease-out), filter 0.5s var(--ease-out);
 }
 .row.is-next {
-  opacity: 0.34;
-  transform: scale(0.84);
-  filter: none;
-  -webkit-line-clamp: 1;
+  opacity: 0;
 }
 .row.is-past {
   opacity: 0;
-  transform: scale(0.92);
-  filter: blur(5px);
-}
-/* The pill (screens without a notch): one row, cover · lyric · equaliser; the lyric scrolls up inside the row. */
-.island.floating .lyric {
-  top: 0;
-  bottom: auto;
-  left: 46px;
-  right: 42px;
-  height: var(--nh);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 7px, #000 calc(100% - 7px), transparent 100%);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 7px, #000 calc(100% - 7px), transparent 100%);
-}
-.island.floating .reel {
-  top: 0;
-}
-.island.floating .top {
-  padding: 0 9px;
-}
-.island.floating .art {
-  width: 26px;
-  height: 26px;
-  border-radius: 13px; /* round, concentric with the pill */
-}
-.pill .row,
-.pill .measure {
-  font-size: calc(15px * var(--text-scale));
-}
-.island.floating .row {
-  padding-bottom: 0;
-}
-.island.floating .row.is-next {
-  opacity: 0;
-}
-.island.floating .row.is-soon {
-  transform: none;
-  opacity: 0.5;
+  filter: blur(6px);
 }
 .measure {
   position: absolute;
@@ -273,7 +402,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 11.5px;
-  color: rgba(255, 255, 255, 0.55);
+  color: var(--sub);
 }
 .controls {
   display: flex;
@@ -290,12 +419,12 @@ body {
   border: 0;
   border-radius: 16px;
   background: transparent;
-  color: #fff;
+  color: var(--fg);
   cursor: pointer;
   transition: background 0.15s ease, transform 0.2s var(--ease-out);
 }
 .controls button:hover {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgb(var(--fg-rgb) / 0.14);
 }
 .controls button:active {
   transform: scale(0.88);
@@ -319,8 +448,20 @@ body {
   height: 18px;
 }
 .controls .open {
-  margin-left: 4px;
-  color: rgba(255, 255, 255, 0.7);
+  margin-left: 2px;
+  opacity: 0.7;
+}
+.nudges {
+  display: flex;
+  margin-left: 6px;
+  padding-left: 6px;
+  border-left: 1px solid rgb(var(--fg-rgb) / 0.18);
+}
+.controls .nudge {
+  width: auto;
+  padding: 0 8px;
+  font: 600 11px/1 var(--font);
+  color: rgb(var(--fg-rgb) / 0.8);
 }
 .play .i-pause,
 .island.playing .play .i-play {
@@ -336,7 +477,8 @@ body {
   .top {
     transition-duration: 0.01s;
   }
-  .bars i {
+  .bars i,
+  .art {
     animation: none;
   }
 }

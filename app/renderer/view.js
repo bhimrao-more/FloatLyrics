@@ -4,7 +4,7 @@
  */
 (() => {
   'use strict';
-  const { indexAt } = window.FloatLyricsCore;
+  const { indexAt, progressAt, singingSpan } = window.FloatLyricsCore;
   const looks = window.FloatLyricsLooks;
   const api = window.floatlyrics;
   const $ = (id) => document.getElementById(id);
@@ -112,13 +112,22 @@
 
   function tick() {
     if (lyrics.status !== 'synced') return;
-    const i = indexAt(lyrics.lines, position());
-    if (i === active) return;
-    if (nodes[active]) nodes[active].classList.remove('is-active');
-    active = i;
-    if (nodes[i]) nodes[i].classList.add('is-active');
-    center(true);
-    publish(i);
+    const pos = position();
+    const i = indexAt(lyrics.lines, pos);
+    if (i !== active) {
+      if (nodes[active]) nodes[active].classList.remove('is-active', 'is-sweep');
+      active = i;
+      if (nodes[i]) nodes[i].classList.add('is-active');
+      center(true);
+      publish(i);
+    }
+    // Karaoke fill across the line being sung.
+    const line = lyrics.lines[i];
+    if (line && line.text && nodes[i] && !reduceMotion) {
+      const next = lyrics.lines[i + 1];
+      nodes[i].classList.add('is-sweep');
+      nodes[i].style.setProperty('--p', progressAt(line, line.t + singingSpan(line, next), pos).toFixed(3));
+    }
   }
 
   function loop() {
@@ -166,6 +175,7 @@
       npApp: np ? np.npApp || '' : '',
       playing: np && np.playing ? '1' : '0',
       match: lyrics.source ? `${lyrics.source.title} — ${lyrics.source.artist} (${lyrics.source.duration}s)` : '',
+      provider: lyrics.source ? lyrics.source.provider || '' : '',
       line: String(i),
       lineT: line ? String(line.t) : '',
       nextT: next ? String(next.t) : '',
@@ -175,8 +185,13 @@
 
   /* ---------- appearance ---------- */
 
+  // Record crackle under the music (vinyl.js), following play/pause.
+  const vinyl = window.FloatLyricsVinyl.createVinyl((name) => api.loadSound(name));
+
   function applySettings(next) {
     settings = next;
+    vinyl.set(settings.vinyl, looks.STEPS.vinylLevel[settings.vinylLevel]);
+    el.root.classList.toggle('vinyl', settings.vinyl !== 'off');
     const root = el.root;
     root.dataset.theme = settings.theme;
     root.dataset.align = settings.align;
@@ -241,6 +256,8 @@
 
   api.on('np', (report) => {
     np = report;
+    vinyl.track(np.title && np.key !== '~ad' ? np.key : '');
+    vinyl.playing(!!np.playing && !!np.title);
     renderSources();
     $('note').hidden = !(np.noPosition && np.playing && lyrics.status === 'synced');
     renderHead();
@@ -338,7 +355,7 @@
   }
 
   // Read-only hooks for DevTools and the e2e test.
-  window.__floatlyrics = { position, nowPlaying: () => np };
+  window.__floatlyrics = { position, nowPlaying: () => np, vinyl: () => vinyl.state() };
 
   applySettings(settings);
   renderLyrics();

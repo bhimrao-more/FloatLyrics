@@ -9,8 +9,13 @@
   <body>
     <div class="island" id="island" data-state="hidden">
       <div class="shell">
+        <div class="gbg" id="gbg"></div>
+        <div class="gdim"></div>
         <div class="top">
-          <img class="art" id="art" alt="" title="Open FloatLyrics" />
+          <div class="disc" id="disc" title="Open FloatLyrics">
+            <span class="ring" id="ring"></span>
+            <img class="art" id="art" alt="" />
+          </div>
           <div class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
         </div>
         <div class="lyric" id="lyric" aria-live="polite"><div class="reel" id="reel"></div></div>
@@ -27,6 +32,10 @@
             <button type="button" id="next" aria-label="Next track" title="Next">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.9 3h1.6v10h-1.6zM3 3.6v8.8a.6.6 0 0 0 .92.5l6.48-4.4a.6.6 0 0 0 0-1L3.92 3.1A.6.6 0 0 0 3 3.6z" /></svg>
             </button>
+            <span class="nudges">
+              <button type="button" id="earlier" class="nudge" title="Show lyrics 0.5s earlier">Earlier</button>
+              <button type="button" id="later" class="nudge" title="Show lyrics 0.5s later">Later</button>
+            </span>
             <button type="button" id="open" class="open" aria-label="Open the lyrics window" title="Open the lyrics window">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path class="stroke" d="M6 3H3.8A.8.8 0 0 0 3 3.8v8.4a.8.8 0 0 0 .8.8h8.4a.8.8 0 0 0 .8-.8V10M9 3h4v4M13 3L7.5 8.5" /></svg>
             </button>

@@ -31,6 +31,7 @@
     /\b(official|video|audio|lyrics?|visuali[sz]er|remaster(ed)?|version|edit|mix|live|feat\.?|ft\.?|featuring|from|hd|hq|4k|explicit|clean|mono|stereo|deluxe|bonus|acoustic|soundtrack|ost|prod\.?|demo|instrumental|slowed|reverb(ed)?|sped|nightcore|daycore|lo-?fi|8d|bass\s*boost(ed)?)\b/i;
   // Edits played at another speed than the record: the lyric timeline has to be stretched to fit.
   const TEMPO = /\b(slowed|sped\s*up|speed\s*up|nightcore|daycore)\b/i;
+  const YEAR = /^\s*[([]?(19|20)\d\d[)\]]?\s*$/;
 
   function cleanTitle(title, artist) {
     const original = String(title || '').trim();
@@ -72,7 +73,10 @@
       .trim();
     const tempo = TEMPO.test(String(title || ''));
     let alt = null;
+    // "Sade - Smooth Operator - Official - 1984": trailing packaging and years are not part of the name
     const parts = t.split(/\s+[-–—]\s+/);
+    while (parts.length > 2 && (NOISE.test(parts[parts.length - 1]) || YEAR.test(parts[parts.length - 1]))) parts.pop();
+    t = parts.join(' - ');
     if (parts.length === 2) {
       const a = normalize(artist).replace(/ /g, '');
       const same = (x) => normalize(x).replace(/ /g, '') === a;
@@ -93,6 +97,8 @@
   }
 
   // "[01:02.34] text" lines, several stamps per line, optional [offset:ms] tag. Returns [{ t, text }] sorted by time.
+  // Enhanced LRC ("[00:12.00] <00:12.00>Look <00:12.40>at <00:12.70>the stars") also yields per-word times:
+  // words: [{ t, text }], so a karaoke fill can follow the singing word by word.
   function parseLrc(lrc) {
     const out = [];
     let offset = 0;
@@ -112,10 +118,60 @@
         rest = rest.slice(m[0].length);
       }
       if (!times.length) continue;
-      const text = rest.replace(/<\d{1,3}:\d{1,2}(?:\.\d{1,3})?>/g, '').trim();
-      for (const t of times) out.push({ t: Math.max(0, t - offset), text });
+      const tag = /<(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?>/g;
+      const words = [];
+      const parts = rest.split(tag); // [before, mm, ss, frac, word, mm, ss, frac, word, ...]
+      for (let k = 1; k + 3 < parts.length + 1; k += 4) {
+        const frac = parts[k + 2] ? parseInt(parts[k + 2], 10) / Math.pow(10, parts[k + 2].length) : 0;
+        const word = parts[k + 3] || '';
+        if (word.trim()) words.push({ t: Math.max(0, parseInt(parts[k], 10) * 60 + parseInt(parts[k + 1], 10) + frac - offset), text: word });
+      }
+      const text = rest.replace(tag, '').replace(/\s+/g, ' ').trim();
+      for (const t of times) {
+        const line = { t: Math.max(0, t - offset), text };
+        if (words.length > 1) line.words = words;
+        out.push(line);
+      }
     }
     return out.sort((x, y) => x.t - y.t);
+  }
+
+  // How much of a line has been sung at `pos` (0..1), for a karaoke fill. With per-word times it follows the words
+  // (by characters, so long words take longer); without, it runs evenly from the line's start to the next line's.
+  function progressAt(line, end, pos) {
+    const span = Math.max(0.6, end - line.t);
+    if (!line.words || !line.words.length) return Math.min(1, Math.max(0, (pos - line.t) / span));
+    const total = line.words.reduce((n, w) => n + w.text.length, 0) || 1;
+    let done = 0;
+    for (let k = 0; k < line.words.length; k++) {
+      const w = line.words[k];
+      if (pos < w.t) break;
+      const wEnd = k + 1 < line.words.length ? line.words[k + 1].t : Math.max(w.t + 0.3, end);
+      done += w.text.length * Math.min(1, (pos - w.t) / Math.max(0.05, wEnd - w.t));
+    }
+    return Math.min(1, done / total);
+  }
+
+  // Timing for singing along. LRC only says when each line starts, not when it has been sung, so estimate that
+  // from its length (lyrics are sung at ~10 characters a second) or from its word times, never past the next line.
+  const SING_CPS = 10;
+  function singingSpan(line, next) {
+    const gap = next ? next.t - line.t : 5;
+    if (line.words && line.words.length) {
+      const last = line.words[line.words.length - 1];
+      return Math.min(gap, Math.max(0.6, last.t - line.t + Math.max(0.3, last.text.trim().length / SING_CPS)));
+    }
+    return Math.min(gap, Math.max(0.8, line.text.length / SING_CPS));
+  }
+
+  // A one-line view (the island) brings the next line in early enough to read it before it is sung: once the
+  // current line has probably been sung, at most 1.2s ahead, at least 0.35s ahead, and never in a line's first
+  // moment on screen (subtitle practice: ~0.8–1s minimum).
+  function handoverAt(line, next) {
+    const gap = next.t - line.t;
+    let h = Math.max(line.t + singingSpan(line, next), next.t - 1.2);
+    h = Math.min(h, next.t - 0.35);
+    return Math.max(h, line.t + Math.min(0.8, gap * 0.5));
   }
 
   // Index of the line being sung at `pos` seconds, or -1 before the first line.
@@ -172,6 +228,106 @@
    * fetchJson(url): resolves parsed JSON, null on 404, rejects on network/server failure.
    * Resolves { status: 'synced' | 'plain' | 'instrumental' | 'none' | 'error', lines?, approx?, source? }.
    */
+  /*
+   * A YouTube video's own captions as synced lyrics. Official music videos often carry uploaded captions: the
+   * lyrics timed to that very video, with its intro, spoken scenes and edit, which no lyrics database knows.
+   * cues: [{ t, d, text }] (seconds) from the caption track. ref: lyric lines from elsewhere, if any, to check the
+   * captions against and to borrow capitalisation from.
+   * Returns { lines, sung, match } or null. sung: share of cues marked as singing (♪); match: share of the
+   * captions' words found in ref (null without ref). Whether to trust them is the caller's call (captionsUsable).
+   */
+  const NOTE = /[♪♫♬]/g;
+  const SOUND = /\b(music|plays?|playing|applause|laugh\w*|instrumental|sing(s|ing)?|vocali[sz]\w*|cheer\w*|radio|dj|background|upbeat|song|humm\w*|whistl\w*|sound\w*|noise|silence|crowd|clap\w*|chatter\w*|speak\w*|narrat\w*)\b/i;
+  function captionLyrics(cues, ref) {
+    const list = (Array.isArray(cues) ? cues : []).filter((c) => c && Number.isFinite(c.t) && String(c.text || '').trim());
+    if (!list.length) return null;
+    const marked = list.filter((c) => /[♪♫♬]/.test(c.text)).length;
+    const sung = marked / list.length;
+    const onlySung = sung >= 0.3; // the track marks singing, so unmarked cues are speech (dialogue, a DJ)
+
+    // Capitalisation from the reference lyrics, for captions written in capitals. A word's form mid-line wins
+    // (a line's first word is capitalised anyway).
+    const cased = new Map();
+    for (const l of ref || []) {
+      String(l.text || '')
+        .split(/\s+/)
+        .forEach((w, k) => {
+          if (!w) return;
+          const low = w.toLowerCase();
+          if (k > 0) cased.set(low, w);
+          else if (!cased.has(low)) cased.set(low, /^I\b/.test(w) ? w : low);
+        });
+    }
+    const recase = (text) => {
+      const letters = text.replace(/[^\p{L}]/gu, '');
+      if (letters.length < 3 || letters !== letters.toUpperCase()) return text;
+      const out = text
+        .toLowerCase()
+        .split(/\s+/)
+        .map((w) => cased.get(w) || w.replace(/^i('|$)/, 'I$1'))
+        .join(' ');
+      return out.replace(/\p{L}/u, (ch) => ch.toUpperCase());
+    };
+    const clean = (c) => {
+      const singing = /[♪♫♬]/.test(c.text);
+      if (onlySung && !singing) return '';
+      let text = String(c.text)
+        .replace(NOTE, ' ')
+        .replace(/\[[^\]]*\]/g, ' ') // [MUSIC], [RADIO PLAYS IN THE BACKGROUND]
+        .replace(/\(([^)]*)\)/g, (m, inner) => (!singing || SOUND.test(inner) ? ' ' : m)) // (gentle upbeat music)
+        .replace(/\s*\n\s*/g, ' ')
+        .replace(/^[\s"“”'.…-]+|[\s"“”]+$/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!/[\p{L}\p{N}]/u.test(text)) return '';
+      return recase(text);
+    };
+
+    const lines = [];
+    list.forEach((c, i) => {
+      const text = clean(c);
+      const prev = lines[lines.length - 1];
+      if (!text) {
+        if (prev && prev.text) lines.push({ t: c.t, text: '' });
+        return;
+      }
+      if (prev && prev.text === text && Math.abs(prev.t - c.t) < 0.05) return;
+      lines.push({ t: c.t, text });
+      // a break after this cue (the music carries on alone): nothing to sing until the next one
+      const next = list[i + 1];
+      const end = c.t + (Number(c.d) > 0 ? Number(c.d) : 0);
+      if (Number(c.d) > 0 && (!next || next.t - end > 2)) lines.push({ t: end, text: '' });
+    });
+    while (lines.length && !lines[lines.length - 1].text && lines.length > 1 && !lines[lines.length - 2].text) lines.pop();
+    const sungLines = lines.filter((l) => l.text);
+    if (!sungLines.length) return null;
+
+    let match = null;
+    if (ref && ref.length) {
+      const known = new Set();
+      for (const l of ref) for (const w of normalize(l.text).split(' ')) if (w.length > 1) known.add(w);
+      let total = 0;
+      let hit = 0;
+      for (const l of sungLines) {
+        for (const w of normalize(l.text).split(' ')) {
+          if (w.length < 2) continue;
+          total++;
+          if (known.has(w)) hit++;
+        }
+      }
+      match = total ? hit / total : 0;
+    }
+    return { lines, sung, match, count: sungLines.length };
+  }
+
+  // Captions are the lyrics if they mark singing or agree with the lyrics found elsewhere; captions that disagree
+  // with known lyrics (a translation, a description of the video) are not.
+  function captionsUsable(c) {
+    if (!c || c.count < MIN_LINES) return false;
+    if (c.match != null) return c.match >= 0.5 || (c.sung >= 0.3 && c.match >= 0.3);
+    return c.sung >= 0.3;
+  }
+
   async function findLyrics(track, fetchJson) {
     const tempo = !!(track && track.tempo);
     // A slowed/sped-up edit is longer/shorter than the record, so its length cannot pick the version.
@@ -278,7 +434,7 @@
     return { status: 'none' };
   }
 
-  const api = { normalize, primaryArtist, cleanTitle, videoTrack, parseLrc, indexAt, scoreCandidate, findLyrics };
+  const api = { normalize, primaryArtist, cleanTitle, videoTrack, parseLrc, indexAt, progressAt, singingSpan, handoverAt, scoreCandidate, captionLyrics, captionsUsable, findLyrics };
   root.FloatLyricsCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof self !== 'undefined' ? self : globalThis);

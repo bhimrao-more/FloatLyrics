@@ -45,6 +45,23 @@
         </div>
       </section>
 
+      <h2>Vinyl</h2>
+      <section class="group">
+        <div class="row column">
+          <span class="label">Record sound <span class="hint">A real record's surface turning quietly under the music, only while it plays. The cover turns like a record.</span></span>
+          <div class="seg wide" id="vinyl" role="radiogroup" aria-label="Record crackle">
+            <button type="button" data-value="off" role="radio">Off</button>
+            <button type="button" data-value="light" role="radio">Light</button>
+            <button type="button" data-value="worn" role="radio">Worn</button>
+            <button type="button" data-value="scratched" role="radio">Scratched</button>
+          </div>
+        </div>
+        <div class="row">
+          <label class="label" for="vinylLevel">Record volume</label>
+          <div class="control"><input type="range" id="vinylLevel" min="0" max="4" step="1" /><output id="vinylLevelOut"></output></div>
+        </div>
+      </section>
+
       <h2>Window</h2>
       <section class="group">
         <div class="row">
@@ -56,11 +73,8 @@
           <input type="checkbox" class="switch" id="island" role="switch" />
         </div>
         <div class="row">
-          <span class="label">Island appears on</span>
-          <div class="seg" id="islandScreen" role="radiogroup" aria-label="Island appears on">
-            <button type="button" data-value="notch" role="radio">MacBook notch</button>
-            <button type="button" data-value="window" role="radio">Window's screen</button>
-          </div>
+          <label class="label" for="islandScreen">Island appears on <span class="hint">Screens without a notch get a glass island</span></label>
+          <select id="islandScreen" class="popup"></select>
         </div>
       </section>
 

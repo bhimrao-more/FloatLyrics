@@ -166,9 +166,25 @@
 
   /* ---------- track changes ---------- */
 
+  // A YouTube video's own captions (probe.js), sent on to the app with the state: once when they arrive, then
+  // every few seconds in case the app was restarted. Very long ones (a whole concert) are not sent.
+  let captions = null;
+  let captionsSent = { id: '', at: 0 };
+  document.addEventListener('floatlyrics:captions', (e) => {
+    try {
+      const c = JSON.parse(e.detail);
+      if (JSON.stringify(c).length < 120000) captions = c;
+    } catch (err) {}
+  });
+
   // The FloatLyrics desktop app, when it is running, takes this tab's exact state (sent on by background.js).
   function forwardToApp(state) {
     if (!state.hasPosition && !state.ad) return;
+    let caps;
+    if (captions && state.videoId && captions.videoId === state.videoId && (captionsSent.id !== state.videoId || Date.now() - captionsSent.at > 5000)) {
+      caps = captions;
+      captionsSent = { id: state.videoId, at: Date.now() };
+    }
     const msg = {
       type: 'fl:state',
       state: {
@@ -185,6 +201,8 @@
         rate: state.rate,
         ad: !!state.ad,
         artwork: state.artwork,
+        videoId: state.videoId || '',
+        captions: caps,
       },
     };
     try {
@@ -200,6 +218,9 @@
   function setAppConnected(on) {
     if (on === appConnected) return;
     appConnected = on;
+    // The page's probe reads this: it fetches a video's captions only for the app.
+    document.documentElement.dataset.floatlyricsApp = on ? '1' : '0';
+    if (on) captionsSent = { id: '', at: 0 };
     placeLauncher();
   }
 
