@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FloatLyrics",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Helper for the FloatLyrics app: gives it the exact playback position of YouTube, YouTube Music, Spotify and Apple Music in the browser. On its own it shows lyrics in a floating window.",
   "minimum_chrome_version": "116",
   "permissions": ["storage"],

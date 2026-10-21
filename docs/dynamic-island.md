@@ -1,7 +1,8 @@
 # Dynamic Island — design reference for FloatLyrics
 
-When the lyrics window is minimised (– button, ⌘M, or the system minimise), it shrinks into the MacBook notch
-and a black "Dynamic Island" around the notch carries on showing the current lyric. The window stays the app;
+When the lyrics window is minimised (– button, ⌘M, or the system minimise), it shrinks into the island and a
+"Dynamic Island" carries on showing the current lyric: black around a MacBook notch, or native glass hanging from
+the top edge of a screen without one (Settings → *Island appears on* picks the screen). The window stays the app;
 the island is one of its features. Clicking the island's cover or its Open button, or the Dock icon, brings the
 window back.
 
@@ -82,7 +83,7 @@ DynamicNotchKit's states and floating fallback are the model; no code is copied 
 
 ## The pill (screens without a notch)
 
-One row, 40px tall (taller when a line wraps): round cover on the left, the lyric scrolling up inside the row,
+One row, 38px tall (taller when a line wraps): round cover on the left, the lyric scrolling up inside the row,
 equaliser on the right. Hover drops the controls row below. It appears when the island's screen has no notch: an
 external monitor chosen in Settings → *Island appears on* (or the window's screen), or the lid closed. Its shape
 and glass are described under *Glass island* below.
@@ -92,18 +93,17 @@ and glass are described under *Glass island* below.
 | State | When | Size |
 | --- | --- | --- |
 | hidden | the window is open | — |
-| idle | nothing playing | exactly the notch (black on black, invisible) |
+| idle | nothing playing, or not a song | notch: exactly the notch (black on black, invisible); glass: faded away |
 | compact | playing, nothing to read: an instrumental break, or not loaded yet | notch + 46px each side: cover left, equaliser right; glass: just the two side by side (92px) |
 | lyric | a line, or the song's name | widens to fit the line (max 600px, two lines max), grows below the notch |
 | paused | paused, for as long as it stays paused | the song's name below the notch, ▶ on the right |
-| expanded | hover (140ms in, 380ms out) | at least 400px: adds title, artist, ⏮ ⏯ ⏭, Open |
+| expanded | hover while playing (140ms in, 450ms out) | at least 470px: adds title, artist, ⏮ ⏯ ⏭, Earlier / Later, Open |
 
-- **Motion.** Width and height ride an underdamped spring (ζ 0.62, 0.6s) sampled into a CSS `linear()` easing, so
-  the island overshoots slightly like the iPhone's. Lines use a softer spring (ζ 0.85): the new line rises in from
-  below out of a blur while the old one leaves upward.
-- **Colour.** The island stays pure black so it reads as the notch growing. Only the equaliser takes a colour,
-  the cover's most saturated hue, lifted to at least 64% lightness so it reads on black. The window's text size
-  setting applies here too; themes do not.
+- **Motion.** See *Motion* above: the outline springs (stiffness 380, damping 25), the lines scroll on a softer one
+  (stiffness 140, damping 19).
+- **Colour.** The notch island stays pure black so it reads as the notch growing. Only the equaliser takes a
+  colour, the cover's most saturated hue, lifted to at least 64% lightness so it reads on black. The window's text
+  size applies; themes do not. The glass island wears the themes (see below).
 - **Shape.** The bottom corners round with the size (10px idle, 12px compact, 22px lyric, 26px expanded). The
   notch's concave top corners are drawn as two 10px radial-gradient "ears" that travel with the edges.
 

@@ -2,8 +2,8 @@
 
 Time-synced lyrics in a small, see-through, always-on-top glass window for whatever is playing on your Mac:
 YouTube, YouTube Music, Spotify or Apple Music, in the browser or in their own apps. It includes play, pause and
-next controls. Minimise it and the lyrics carry on in a Dynamic Island around the MacBook notch.
-Free and open source (MIT). No account, no API key, no tracking.
+next controls. Minimise it and the lyrics carry on in a Dynamic Island around the MacBook notch, or in a glass
+island at the top of any other screen. Free and open source (MIT). No account, no API key, no tracking.
 
 ## Run it (macOS)
 
@@ -27,12 +27,13 @@ Play a song anywhere. The window sits bottom-right, above every other window, on
 full-screen apps.
 
 - **Chrome: add the extension too.** For music in Chrome tabs, load `extension/` as below. It hands the app the
-  tab's exact position, length and adverts, which macOS cannot always give for web players. Play/pause/next then
-  go straight to that tab.
-- **Move it:** drag anywhere. **Resize it:** drag an edge; the lyrics scale with the window.
-- **Controls:** hover for ⏮ ⏯ ⏭ and **Earlier / Later** (nudge the timing in 0.5s steps). Songs with several
-  recordings (live, acoustic, remaster) show a **1/4** button; click it to try the next version's timing. With the window focused,
-  Space plays or pauses and ← / → skip.
+  tab's exact position, length and adverts, which macOS cannot always give for web players, and a YouTube video's
+  own captions. Play/pause/next then go straight to that tab. After updating FloatLyrics, reload the extension in
+  `chrome://extensions` and refresh your music tabs.
+- **Move it:** hold the title or the cover and drag. **Resize it:** drag an edge; the lyrics scale with the window.
+- **Controls:** hover for ⏮ ⏯ ⏭ and **Earlier / Later** (nudge the timing in 0.5s steps; FloatLyrics remembers
+  the fix for that song). When several recordings (live, acoustic, remaster) or a video's own captions match, a
+  **1/N** button steps through their timings. With the window focused, Space plays or pauses and ← / → skip.
 - **Look:** the sliders icon at the top opens five themes (Cover, Clear, Tinted, Graphite, Light) and text size.
   **Advanced…** (or ⌘,) opens Settings for glass clarity, cover colour, alignment, line softening and
   keep-on-top. Every option stays within the design; **Restore Defaults** brings back the original look.
@@ -58,8 +59,10 @@ full-screen apps.
   video has no such captions. The extension asks YouTube's player for them out of sight and leaves your caption
   setting as it was. YouTube Music uses LRCLIB only.
 - **Several players at once:** FloatLyrics follows the one you started last, prefers a music player over a plain
-  video when both play, and keeps a song you just paused. A **⇄** button appears when more than one is open;
-  click it to follow another. Videos that are not songs say so, and the island stays tucked away for them.
+  video when both play, and keeps a song you paused, even in a background tab and however long it stays paused.
+  The muted previews YouTube plays when you rest on a thumbnail are ignored. A **⇄** button appears when more than
+  one is open; click it to follow another. Videos that are not songs say so, and the island stays tucked away for
+  them.
 - **Close:** the × at the top, or ⌘Q.
 
 Native Liquid Glass needs macOS 26 or later. Older versions get a frosted window instead.
@@ -68,24 +71,26 @@ Native Liquid Glass needs macOS 26 or later. Older versions get a frosted window
 
 | Source | Status |
 | --- | --- |
-| YouTube Music and YouTube in Chrome | Tested end to end (`npm run test:app`): lyrics in sync, play/pause/next, themes, settings, minimise to the island and back |
-| Spotify, Apple Music (web or app), Music.app, other browsers | Read the same way (macOS Now Playing); not yet tested |
+| YouTube Music and YouTube in Chrome | Tested end to end: lyrics in sync, play/pause/next, themes, settings, the island on every screen, pause and resume, intros and breaks (`npm run test:app`, `test:island`), a video's own captions (`test:captions`) |
+| Spotify, Apple Music (web or app), Music.app, other browsers | Read through macOS Now Playing; not yet tested end to end |
 
 ## How it works
 
 ```
-any player ──▶ macOS Now Playing ──▶ app/nowplaying.js ──▶ app/main.js ──▶ lrclib.net
-                (what Control         title, artist,         track changed?
-                 Center shows)        position, cover        look up + cache
-                                            │
-                                            ▼
-                                   app/renderer (the window): lyrics in time, glass UI, controls
+Chrome tab ──▶ extension (probe.js) ──▶ 127.0.0.1:47231 ──┐   exact position, adverts, the video's captions
+                                                           ├──▶ app/main.js ──▶ lrclib.net (look up + cache)
+any player ──▶ macOS Now Playing ──▶ app/nowplaying.js ───┘   which player to follow, the song, its lyrics
+                                                                     │
+                                                                     ▼
+                                    app/renderer: the window (lyrics in time, glass, controls) and the island
 ```
 
 - **The extension bridge.** When the extension is installed, each Chrome tab posts its exact player state to the
   app on `127.0.0.1:47231` (the app accepts only the extension's requests). The app prefers that for Chrome tabs
   and uses macOS Now Playing for everything else. Now Playing follows whichever media element is active, which on
-  YouTube includes pause ads and previews. A paused song stays on screen unless another player starts afterwards.
+  YouTube includes pause ads and thumbnail previews; the app sees through both. A paused song stays on screen
+  unless another player starts afterwards. Chrome runs a hidden, silent tab's timers about once a minute, so a
+  paused background tab is kept for two minutes between reports rather than dropped.
 - **`app/nowplaying.js`** reads macOS Now Playing and sends play/pause/next/previous to whichever app owns it.
   Since macOS 15.4 only Apple-entitled processes may do that;
   [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) (BSD-3-Clause, vendored in
@@ -94,12 +99,13 @@ any player ──▶ macOS Now Playing ──▶ app/nowplaying.js ──▶ app
 - **`app/main.js`** turns each report into a track (YouTube video titles and channel names are cleaned up by
   `videoTrack()`), looks up lyrics, and owns the window. The window is frameless, transparent and always on top,
   with native glass behind it from [electron-liquid-glass](https://github.com/Meridius-Labs/electron-liquid-glass).
-- **`app/lyrics.js`** asks [LRCLIB](https://lrclib.net) through the shared matcher and caches answers on disk.
+- **`app/lyrics.js`** asks [LRCLIB](https://lrclib.net) through the shared matcher and caches answers on disk. When
+  LRCLIB cannot be reached, the app tries again by itself while the song plays (after 3, 6, 15, 30 and 60s).
   For a youtube.com video, `captionLyrics()` in `extension/core.js` turns its own uploaded captions (sent on by
   the extension's `probe.js`) into lyric lines; they lead when they mark singing or agree with LRCLIB's words.
 - **`app/renderer/`** draws the windows. `view.js` keeps the highlighted line on the music, `looks.js` defines the
-  appearance options and their limits, `settings.html` is the Settings window, and `island.html` / `island.js`
-  are the Dynamic Island ([docs/dynamic-island.md](docs/dynamic-island.md)).
+  appearance options and their limits, `settings.html` is the Settings window, `vinyl.js` is the record sound, and
+  `island.html` / `island.js` are the Dynamic Island ([docs/dynamic-island.md](docs/dynamic-island.md)).
 - **`extension/core.js`** (lyric matching, LRC parsing) and **`extension/glass.js`** (refracting glass) are shared
   with the browser extension.
 
@@ -115,23 +121,31 @@ against: [docs/dynamic-island.md](docs/dynamic-island.md).
 
 [LRCLIB](https://lrclib.net) is a free, open, crowd-sourced database of line-synced lyrics. Because anyone can
 add to it, candidates are scored on title, artist, duration and lyric length before one is shown. On youtube.com,
-a video's own captions come first when they are its lyrics (see above). After updating, reload the extension in
-`chrome://extensions` and reload your YouTube tabs.
+a video's own captions come first when they are its lyrics (see above); YouTube Music uses LRCLIB only. If a
+song's timing is off, **Earlier / Later** fixes it and is remembered for that song.
 
 ## The browser extension
 
-`extension/` is the earlier Chrome extension. It shows lyrics in Chrome's Picture-in-Picture window, which keeps
-Chrome's own title bar, and it needs no app install. Load it unpacked from `chrome://extensions` (Developer mode).
-`npm run test:e2e` tests it.
+`extension/` does two jobs. With the app running, it is the app's helper for Chrome: each tab's exact player
+state, play/pause/next, and a YouTube video's own captions (`probe.js` reads them from YouTube's player, out of
+sight, and leaves your caption setting as it was). Without the app, it shows lyrics on its own in Chrome's
+Picture-in-Picture window (which keeps Chrome's title bar), from a **♪ Lyrics** button on the page; the button
+steps aside while the app runs. Load it unpacked from `chrome://extensions` (Developer mode); after updates, click
+reload there and refresh your music tabs. `npm run test:e2e` tests it on its own.
 
 ## Develop
 
 ```sh
 npm test               # matcher, LRC parsing, captions, appearance settings, live LRCLIB lookups
-npm run test:app       # plays a song in a test browser and drives the app: sync, themes, settings, controls
-npm run test:island    # the island on every connected screen, back and forth, and play/pause storms
+npm run test:app       # plays a song in a test browser and drives the app: sync, themes, settings, vinyl, controls
+npm run test:island    # the island on every connected screen and back, play/pause storms, a long pause and ▶,
+                       # the intro and a break, a failed lookup retried (FL_QUICK=1 FL_URL=<song>: just those, on another song)
 npm run test:captions  # a YouTube music video's own captions become its lyrics
+npm run test:e2e       # the extension on its own (Picture-in-Picture), on YouTube Music
 ```
+
+If something looks wrong (lyrics stuck, the wrong player followed), `~/Library/Application Support/FloatLyrics/diagnostics.log`
+records what the app followed, the lyrics it loaded, macOS Now Playing and the island, on this Mac only.
 
 The end-to-end tests play music, muted, in a minimised test browser with a temporary copy of the extension on its
 own port, and drive an invisible test copy of the app. A FloatLyrics you have open is left alone, and the test
@@ -140,9 +154,10 @@ copies never read or control macOS Now Playing, so your own music is never pause
 ## Roadmap
 
 - Test Spotify and Apple Music (app and web) end to end.
-- Package as a signed `.app`, launch at login, menu-bar icon.
+- A signed and notarised build (today's `npm run package` is signed ad hoc, for this Mac), launch at login,
+  menu-bar icon.
 - Windows (System Media Transport Controls) and Linux (MPRIS).
-- Word-by-word highlighting, click a line to seek.
+- Click a line to seek.
 
 ## Credits
 

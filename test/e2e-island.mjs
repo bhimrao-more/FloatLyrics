@@ -82,7 +82,7 @@ try {
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'floatlyrics-test-'));
   const plain = screens.find((s) => !s.notch) || screens[0];
   fs.writeFileSync(path.join(userData, 'window.json'), JSON.stringify({ x: Math.round(plain.x + plain.w / 2 - 190), y: Math.round(plain.y + plain.h / 2), width: 380, height: 220 }));
-  appProc = spawn(electronPath, ['.'], { cwd: ROOT, env: { ...process.env, FL_DEBUG_PORT: String(PORT), FL_USER_DATA: userData, FL_BRIDGE_PORT: String(BRIDGE_PORT), FL_TEST: '1', FL_NO_NOWPLAYING: '1' }, stdio: 'ignore' });
+  appProc = spawn(electronPath, ['.'], { cwd: ROOT, env: { ...process.env, FL_DEBUG_PORT: String(PORT), FL_USER_DATA: userData, FL_BRIDGE_PORT: String(BRIDGE_PORT), FL_TEST: '1', FL_NO_NOWPLAYING: '1', FL_FAIL_LOOKUPS: '1' }, stdio: 'ignore' });
   for (let i = 0; i < 60 && !appBrowser; i++) {
     await sleep(500);
     appBrowser = await puppeteer.connect({ browserURL: `http://127.0.0.1:${PORT}`, defaultViewport: null }).catch(() => null);
@@ -105,6 +105,10 @@ try {
   const read = () => win.evaluate(() => ({ ...document.body.dataset }));
   for (let i = 0; i < 100 && (await read()).status !== 'synced'; i++) await sleep(300);
   check((await read()).status === 'synced', 'synced lyrics found', (await read()).track);
+  // The first lookup was made to fail (FL_FAIL_LOOKUPS): the app must try again by itself, not wait for a new song.
+  const log = fs.readFileSync(path.join(userData, 'diagnostics.log'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.event === 'lyrics');
+  const failedFirst = log.findIndex((e) => e.status === 'error');
+  check(failedFirst >= 0 && log.slice(failedFirst + 1).some((e) => e.status === 'synced'), 'a failed lyrics lookup is retried on its own', log.map((e) => e.status).join(' → '));
 
   // Everything about the island that can go wrong, read from inside it.
   const inspect = (isl) =>

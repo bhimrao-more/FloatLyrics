@@ -51,6 +51,18 @@ function saveOffsets() {
   }, 800);
 }
 
+// A small local log of what the app followed and showed (userData/diagnostics.log, under 512KB, one older file
+// kept), so an odd moment can be looked into afterwards. Nothing leaves the Mac.
+function diag(event, data) {
+  try {
+    const file = path.join(app.getPath('userData'), 'diagnostics.log');
+    try {
+      if (fs.statSync(file).size > 512 * 1024) fs.renameSync(file, `${file}.1`);
+    } catch (err) {}
+    fs.appendFile(file, `${JSON.stringify({ at: new Date().toISOString(), event, ...data })}\n`, () => {});
+  } catch (err) {}
+}
+
 function send(channel, data) {
   last[channel] = data;
   for (const w of BrowserWindow.getAllWindows()) {
@@ -72,6 +84,9 @@ let npState = {}; // merged Now Playing state from the adapter
 let npArt = '';
 const tabs = new Map(); // extension reports by browser tab
 const TAB_FRESH_MS = 2500;
+// Chrome runs a hidden, silent tab's timers about once a minute, so a paused tab in the background reports
+// rarely. It is still the player you paused: keep following it rather than fall back to Now Playing.
+const TAB_PAUSED_FRESH_MS = 120000;
 let lastSong = null; // the last real song (≥ 30s), to see through YouTube's short pause ads
 let current = null; // the report on screen
 let emptySince = 0;
@@ -81,6 +96,8 @@ let npPlayingSince = 0; // when Now Playing started playing its current item
 const npHasPosition = () => !!(npState.timestampEpochMicros || npState.durationMicros);
 const positionOf = (r, now) => r.elapsed + (r.playing ? Math.max(0, ((now - r.at) / 1000) * r.rate) : 0);
 const sameTitle = (a, b) => !!a && !!b && normalize(a.title) === normalize(b.title);
+// Now Playing shows a youtube.com tab by its video title; the tab's report has the song's (rawTitle is the video's).
+const sameTab = (t, n) => sameTitle(t, n) || (!!t.rawTitle && normalize(t.rawTitle) === normalize(n.title));
 
 function nowPlayingReport() {
   const s = npState;
@@ -125,7 +142,7 @@ const labelOf = (r) =>
 function tabReports(now) {
   const out = [];
   for (const [id, t] of tabs) {
-    if (now - t.receivedAt > TAB_FRESH_MS) {
+    if (now - t.receivedAt > (t.paused ? TAB_PAUSED_FRESH_MS : TAB_FRESH_MS)) {
       tabs.delete(id);
       continue;
     }
@@ -135,6 +152,7 @@ function tabReports(now) {
       tabId: id,
       site: t.site || 'web',
       title: t.title || '',
+      rawTitle: t.rawTitle || '',
       artist: t.artist || '',
       alt: t.alt,
       tempo: t.tempo,
@@ -157,10 +175,18 @@ function tabReports(now) {
 }
 
 // Everything that could be followed right now. Now Playing joins unless it is just one of the tabs again.
+// YouTube plays a muted preview when the pointer rests on a thumbnail, and Chrome lists it in Now Playing: a clip
+// of a few seconds, or of no length at all. Not something to follow away from your song. (A short clip under the
+// song's own title is a pause advert; choose() handles that. With no extension, Chrome sometimes reports a real
+// song with no length, so a clip without one counts as a preview only while the extension reports the tabs.)
+const isPreview = (n) =>
+  BROWSER.test(n.app) && !(lastSong && sameTitle(lastSong, n)) && ((n.duration > 0 && n.duration < 30) || (!(n.duration > 0) && tabs.size > 0));
+
 function candidates(now) {
   const list = tabReports(now);
-  const n = nowPlayingReport();
-  if (n && !(BROWSER.test(n.app) && list.some((t) => sameTitle(t, n)))) list.push({ ...n, id: 'np', startedAt: npPlayingSince });
+  let n = nowPlayingReport();
+  if (n && isPreview(n)) n = null;
+  if (n && !(BROWSER.test(n.app) && list.some((t) => sameTab(t, n)))) list.push({ ...n, id: 'np', startedAt: npPlayingSince });
   return list;
 }
 
@@ -217,6 +243,31 @@ function choose(now) {
 
 let song = { key: '', duration: null, since: 0, found: null, captions: '' }; // the song the lyrics are for
 let lookupTimer = null;
+
+// Look the song up; if LRCLIB could not be reached (rate limit, network), try again on its own while the song plays
+// (after 3, 6, 15, 30 and 60s) rather than leave the song without lyrics until it is played again.
+const RETRY_S = [3, 6, 15, 30, 60];
+function lookupSong(track, key, attempt) {
+  const retry = () => {
+    if (key !== song.key || attempt >= RETRY_S.length) return;
+    clearTimeout(lookupTimer);
+    lookupTimer = setTimeout(() => key === song.key && lookupSong(track, key, attempt + 1), RETRY_S[attempt] * 1000);
+  };
+  lyrics.lookup(track).then(
+    (result) => {
+      if (key !== song.key) return;
+      song.found = result;
+      showLyrics();
+      if (result.status === 'error') retry();
+    },
+    () => {
+      if (key !== song.key) return;
+      song.found = { status: 'error' };
+      showLyrics();
+      retry();
+    },
+  );
+}
 let shownArt = null;
 
 // The lyrics for the song, once the lookup is back. On youtube.com the video's own captions lead when they are
@@ -241,11 +292,27 @@ function showLyrics() {
       out = { ...found, ...own, status: 'synced', versions: [own, ...others].slice(0, 5) };
     }
   }
+  const sung = (out.lines || []).filter((l) => l.text && l.t >= 0);
+  diag('lyrics', { key: song.key, status: out.status, provider: out.source && out.source.provider, id: out.source && out.source.id, duration: out.source && out.source.duration, first: sung.length ? sung[0].t : null, last: sung.length ? sung[sung.length - 1].t : null, versions: (out.versions || []).length });
   send('lyrics', { ...out, key: song.key, version: 0 });
 }
 
+let followed = '';
+let followedLogAt = 0;
 function publish(r) {
   current = r;
+  // What is followed, in the diagnostics: on every change of source, song or play state, and every 10s.
+  const now = Date.now();
+  const follow = r ? `${r.id}|${r.title}|${r.playing}|${r.ad}` : '';
+  if (follow !== followed || now - followedLogAt > 10000) {
+    followed = follow;
+    followedLogAt = now;
+    diag('follow', r ? {
+      source: r.id, label: labelOf(r), title: r.title, artist: r.artist, playing: !!r.playing, ad: !!r.ad,
+      position: Math.round(positionOf(r, now) * 10) / 10, duration: Math.round(r.duration || 0), clockAge: Math.round((now - r.at) / 100) / 10,
+      noPosition: !!r.noPosition, sources: sources.map((c) => `${c.id}:${c.playing ? 'playing' : 'paused'}`).join(' '),
+    } : { source: null, sources: sources.map((c) => c.id).join(' ') });
+  }
   const isAd = !!r && (r.ad || (r.duration > 0 && r.duration < 30));
   const key = !r ? '' : isAd ? '~ad' : `${normalize(r.title)}|${normalize(r.artist)}`;
   send('np', {
@@ -293,20 +360,7 @@ function publish(r) {
     song.duration = r.duration;
     clearTimeout(lookupTimer);
     const track = { title: r.title, artist: r.artist, album: r.album, duration: r.duration, alt: r.alt, tempo: r.tempo };
-    lookupTimer = setTimeout(() => {
-      lyrics.lookup(track).then(
-        (result) => {
-          if (key !== song.key) return;
-          song.found = result;
-          showLyrics();
-        },
-        () => {
-          if (key !== song.key) return;
-          song.found = { status: 'error' };
-          showLyrics();
-        },
-      );
-    }, 250);
+    lookupTimer = setTimeout(() => lookupSong(track, key, 0), 250);
   }
   return undefined;
 }
@@ -934,6 +988,8 @@ app.whenReady().then(() => {
   const fromIsland = (event) => !!island && !island.isDestroyed() && event.sender === island.webContents;
   ipcMain.on('island:hover', (event, inside) => fromIsland(event) && !TEST && islandKind === 'notch' && island.setIgnoreMouseEvents(!inside, { forward: true }));
   // The island's page has laid itself out for its screen: it may be shown.
+  // What the island shows, when it changes (island.js), for the diagnostics.
+  ipcMain.on('island:diag', (event, data) => fromIsland(event) && diag('island', data && typeof data === 'object' ? data : {}));
   ipcMain.on('island:ready', (event) => {
     if (!fromIsland(event)) return;
     islandReady = true;
@@ -996,6 +1052,15 @@ app.whenReady().then(() => {
     ]),
   );
   np.on('change', (state, diff) => {
+    const keys = Object.keys(diff).filter((k) => !/^artwork/.test(k));
+    if (keys.length) {
+      diag('nowplaying', {
+        changed: keys.join(','), app: state.bundleIdentifier, title: state.title, playing: state.playing, rate: state.playbackRate,
+        elapsed: state.elapsedTimeMicros != null ? Math.round(state.elapsedTimeMicros / 1e5) / 10 : null,
+        clockAge: state.timestampEpochMicros ? Math.round((Date.now() - state.timestampEpochMicros / 1000) / 100) / 10 : null,
+        duration: state.durationMicros ? Math.round(state.durationMicros / 1e6) : null,
+      });
+    }
     const playing = state.playing != null ? !!state.playing : (state.playbackRate || 0) > 0;
     if (!playing) npPlayingSince = 0;
     else if (!npPlayingSince || state.title !== npState.title) npPlayingSince = Date.now();

@@ -31,6 +31,7 @@ function createLyrics(cacheFile) {
   } catch (err) {}
   const inflight = new Map();
   let saveTimer = null;
+  let failing = Number(process.env.FL_FAIL_LOOKUPS) || 0; // tests: the first lookups fail as if LRCLIB were down
 
   function save() {
     clearTimeout(saveTimer);
@@ -47,6 +48,10 @@ function createLyrics(cacheFile) {
   // track: { title, artist, duration, alt?, tempo? } as videoTrack()/the player gives it
   function lookup(track) {
     const key = `${track.tempo ? '~' : ''}${normalize(track.title)}|${normalize(track.artist)}|${Math.round((track.duration || 0) / 5)}`;
+    if (failing > 0) {
+      failing--;
+      return Promise.resolve({ status: 'error' });
+    }
     const hit = cache[key];
     if (hit && Date.now() - hit.at < (hit.result.status === 'none' ? MISS_TTL : FOUND_TTL)) return Promise.resolve(hit.result);
     if (!inflight.has(key)) {

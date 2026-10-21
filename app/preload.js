@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('floatlyrics', {
   islandHover: (inside) => ipcRenderer.send('island:hover', !!inside),
   islandSize: (w, h, show) => ipcRenderer.send('island:size', w, h, !!show),
   islandReady: () => ipcRenderer.send('island:ready'),
+  islandDiag: (data) => ipcRenderer.send('island:diag', data),
   displays: () => ipcRenderer.invoke('displays'),
   minimize: () => ipcRenderer.send('window:minimize'),
   restore: () => ipcRenderer.send('window:restore'),

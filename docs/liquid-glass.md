@@ -86,6 +86,10 @@ tint). The desktop really shows through, refracted and blurred by the system. On
 the cover colour *thinly* (about 60%) so the glass keeps its see-through quality. Below macOS 26 it falls back to
 `vibrancy: 'hud'` (frosted).
 
+**Glass island (`app/renderer/island.*`).** On a screen without a notch the Dynamic Island is native glass too
+(corner radius 16, hung 16px above the top edge so only its bottom corners show), wearing the window's theme,
+clarity and cover colour live; the Light theme gets a light glass tint. See `docs/dynamic-island.md`.
+
 **Browser extension (`extension/`).** Chrome draws its Document Picture-in-Picture window **opaque** with its own
 title bar, so nothing behind it shows through. There the cover colour field stands in for "the world behind the
 glass". This limit is why the project moved to the desktop app.
@@ -98,7 +102,7 @@ In both, the functional capsules (title, controls) refract the lyrics passing be
 | --- | --- |
 | Colour field | Two copies of the cover, about 1.6× the window size, `blur(40–56px) saturate(1.7–2)`, slowly drifting and rotating (30–40s cycles). Cross-fade on track change. A fallback gradient when there is no cover. |
 | Dimming | About 30% dark gradient over the colour field (Apple's 35% guidance for bright media), plus a faint text shadow on the active line |
-| Lyrics (content layer) | Not glass. Active line white and bold; other lines translucent white, slightly blurred and smaller (Apple Music-style focus). Edges fade like a scroll edge effect. |
+| Lyrics (content layer) | Not glass. Active line bright, filling with light as it is sung (a karaoke sweep, word by word when the lyrics have word timing); other lines translucent and softly blurred, all the same size (no scaling: it read as text growing). Edges fade like a scroll edge effect; the list scrolls on a Motion spring. |
 | Title capsule (functional) | Refracting glass pill: cover thumbnail (concentric radius), title, artist |
 | Controls capsule (functional) | Refracting glass pill that appears on hover: ⏮ ⏯ ⏭, then Earlier · Sync · Later (the sync group hides below 330px wide) |
 | Window pane | 22px corners matching the native glass, inner hairline rim and top highlight. Capsules use 19px (concentric). |
@@ -125,4 +129,8 @@ Defined and validated in `app/renderer/looks.js`.
 | Keep above other windows | Settings | **on** / off |
 
 Themes only move CSS variables (`--veil`, `--art-a`, `--glass-fill`, `--fg`…), never the layout.
+
+Settings also holds what is not about the glass: **Vinyl** (a record's surface under the music: Off / Light / Worn /
+Scratched, and a volume) and **Window** (keep above other windows, minimise into the island, and which screen the
+island appears on).
 

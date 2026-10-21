@@ -190,6 +190,7 @@
       state: {
         site: state.site,
         title: state.title,
+        rawTitle: state.rawTitle || '',
         artist: state.artist,
         album: state.album,
         alt: state.alt,
@@ -225,7 +226,8 @@
   }
 
   function onState(state) {
-    if (state.site === 'youtube' && state.title) Object.assign(state, videoTrack(state.title, state.artist));
+    // youtube.com: the video's own title becomes a track; the raw one still identifies the tab to the app.
+    if (state.site === 'youtube' && state.title) Object.assign(state, { rawTitle: state.title }, videoTrack(state.title, state.artist));
     forwardToApp(state);
     player = state;
     showArt(); // the cover can land after the lyrics do

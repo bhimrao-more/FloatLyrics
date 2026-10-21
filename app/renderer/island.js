@@ -501,9 +501,15 @@
   });
   document.addEventListener('mouseleave', () => setHover(false));
 
-  // State mirrored onto <body data-*> for DevTools and the e2e test.
+  // State mirrored onto <body data-*> for DevTools and the e2e test, and changes to the app's diagnostics.
+  let told = '';
   function publish(state) {
     const r = rows[focus.row];
+    const now = `${state}|${focus.kind}|${focus.row}`;
+    if (now !== told && geo.active) {
+      told = now;
+      api.islandDiag({ state, item: focus.kind, row: focus.row, rows: rows.length, lyrics: lyrics.status, key: lyrics.key, position: Math.round(position() * 10) / 10, playing: !!(np && np.playing), text: r ? r.text.slice(0, 60) : '' });
+    }
     Object.assign(document.body.dataset, {
       state,
       mode: glass() ? 'glass' : 'notch',
