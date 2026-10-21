@@ -37,8 +37,9 @@ full-screen apps.
   **Advanced…** (or ⌘,) opens Settings for glass clarity, cover colour, alignment, line softening and
   keep-on-top. Every option stays within the design; **Restore Defaults** brings back the original look.
 - **Minimise into the notch:** the – at the top, or ⌘M. The window shrinks into the notch and a Dynamic Island
-  takes over: a small lyric reel, the line being sung in focus and the next one waiting below, scrolling up on a
-  spring with every line. Hover it for the title, ⏮ ⏯ ⏭ and Open. Click the cover, Open or the Dock icon to bring
+  takes over: each new line rises in from below and carries the old one up and out, on a spring. Before the first line it
+  shows the song's name; in an instrumental break it draws in to just the cover and the equaliser. Paused, it stays with the
+  song's name and ▶. Hover it for the title, ⏮ ⏯ ⏭ and Open. Click the cover, Open or the Dock icon to bring
   the window back. **Settings → Island appears on** picks the screen: the MacBook notch, the window's screen, or
   any connected screen by name (with three or four monitors, each one is listed). On a screen without a notch the
   island is a native glass pill hanging from the top edge, with everything in one row (cover · lyric ·

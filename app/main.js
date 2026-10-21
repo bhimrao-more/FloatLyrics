@@ -942,7 +942,7 @@ app.whenReady().then(() => {
   // The glass island asks for its size, and says whether it has anything to show; the window springs to it.
   ipcMain.on('island:size', (event, w, h, show) => {
     if (!fromIsland(event) || islandKind !== 'glass') return;
-    islandSize = { w: Math.max(120, Math.min(720, Number(w) || 200)), h: Math.max(GLASS_ROW_H, Math.min(220, Number(h) || GLASS_ROW_H)) };
+    islandSize = { w: Math.max(80, Math.min(720, Number(w) || 200)), h: Math.max(GLASS_ROW_H, Math.min(220, Number(h) || GLASS_ROW_H)) };
     islandWanted = !!show;
     setIslandBounds(islandShown);
     syncIsland();

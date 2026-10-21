@@ -3,10 +3,11 @@
  *  - around a MacBook notch: a black island growing out of the notch (the notch row on top, the lyrics below);
  *  - on a screen without a notch: a glass island hanging from the top edge, one row (cover · lyric · equaliser),
  *    in native macOS glass, wearing the window's theme, text size, clarity and cover colour (live).
- * The lyrics are a reel: every line is a row, each sliding on its own slightly staggered spring so the lines roll
- * up like a wave; the line being sung fills with light as it is sung. Hover expands the island into controls.
- * States: hidden (window open) · idle (tucked away) · compact (cover + equaliser) · lyric · expanded (hover).
- * Springs by Motion (motion.dev, MIT): physical, so an interrupted move keeps its speed.
+ * The lyrics scroll: each line has a slot the height of the island, so a new line carries the old one up and out
+ * of the top while it rises in from below, all on one spring (Motion, the engine behind Framer Motion). The intro
+ * shows the song's name; in an instrumental break the island draws in to just the cover and the equaliser; the
+ * line being sung fills with light as it is sung. Paused, the island stays, with the song's name and a ▶.
+ * States: hidden (window open) · idle (nothing playing) · compact · lyric · paused · expanded (hover).
  */
 (() => {
   'use strict';
@@ -20,6 +21,7 @@
   const reelEl = $('reel');
   const measureEl = $('measure');
   const ringEl = $('ring');
+  const pmetaEl = $('pmeta');
   const rootStyle = document.documentElement.style;
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -33,16 +35,22 @@
   const MORE_H = 48; // hover row
   const TOP_PAD = 6;
   const BOTTOM_PAD = 10;
-  const PAUSE_IDLE_MS = 15000; // paused this long, the island tucks away
-  const SOON_S = 20; // during an intro or instrumental gap, show the next line this far ahead
-  const STAGGER_MS = 45; // each following line sets off this much later: the reel rolls like a wave
-  const COUNTDOWN_S = 1.5; // after a break, the coming line brightens over this long before it is sung
+  const PMETA_H = 32; // paused: the song's name and artist, two small lines
+  const SOON_S = 3; // after an intro or a break, the coming line rises in this long before it is sung
+  const COUNTDOWN_S = 1.5; // ...and brightens over its last 1.5s: a count-in
+  const BREAK_S = 6; // music alone for this long: the island draws in to the cover and the equaliser
+  const LINGER_S = 1; // a sung line stays this long before the island draws in for a break
+  const INTRO_S = 4; // an intro this long shows the song's name until the first line
   const EXPANDED_W = 470;
+  const COMPACT_W = 92; // glass, nothing to read: the cover and the equaliser side by side, no gap between
 
   // The island's outline: quick, with a little overshoot, like iPhone's (damping ratio ≈ 0.65).
   const SHAPE = { type: 'spring', stiffness: 380, damping: 25, mass: 1 };
-  // Lyric rows: smooth, settling without a wobble (critically damped), so words stay readable while they move.
-  const ROLL = { type: 'spring', stiffness: 170, damping: 26, mass: 1 };
+  // Lines scroll on one gently underdamped spring (damping ratio ≈ 0.8): the physical glide of a Framer Motion
+  // layout animation. Fades ride along: in with Apple's long ease-out, out a little quicker.
+  const SCROLL = { type: 'spring', stiffness: 140, damping: 19, mass: 1 };
+  const FADE_IN = { duration: 0.42, ease: [0.22, 1, 0.36, 1] };
+  const FADE_OUT = { duration: 0.32, ease: [0.4, 0, 1, 1] };
   const move = (el, keyframes, opts) => animate(el, keyframes, reduceMotion ? { duration: 0 } : opts);
   let shapeMoves = []; // the notch island's size and corners in flight
 
@@ -51,15 +59,20 @@
   let np = null;
   let lyrics = { status: 'idle', key: '' };
   let offset = 0;
-  let rows = []; // { el, t, end, text }, one per lyric line that has words
-  let rowOfLine = []; // lyric line index → row index (-1 for empty lines)
-  let focus = { row: -1, kind: '' }; // kind: 'now' (being sung) or 'soon' (next line, during gaps)
-  let pausedSince = 0;
+  let rows = []; // { el, kind: 'line' | 'title', text, t, end, line, h }, in time order
+  let rowOfLine = []; // lyric line index → row (-1 for empty lines)
+  let breakAfter = []; // lyric line index → { t, end } of the instrumental break after it
+  let introRow = -1; // the song's name before the first line (or instead of lyrics that are not timed)
+  let outroRow = -1; // ...and after the last
+  let focus = { row: -1, kind: '' }; // kind: 'now' (being sung), 'soon' (coming in), 'title', 'break' (row -1)
+  let pausedView = false; // the song's name and ▶ are showing instead of the lyric
   let hover = false;
   let expanded = false;
+  let holdExpand = false; // just pressed ▶: stay a one-line island until the pointer leaves
   let hoverTimer = null;
   let shape = '';
   let asked = { w: 0, h: 0, show: false }; // last size asked of the glass window
+  let lineHeight = 0; // one line of lyric text, for the rows that are not lyrics
 
   const glass = () => !!geo.glass;
 
@@ -75,64 +88,158 @@
     return { width: Math.ceil(r.width), height: Math.ceil(r.height) };
   }
 
+  const pen = document.createElement('canvas').getContext('2d');
+  function textWidth(text, font) {
+    pen.font = `${font} ${getComputedStyle(document.body).fontFamily}`;
+    return Math.ceil(pen.measureText(text || '').width);
+  }
+
+  const songTitle = () => $('title').textContent || '';
+  const songArtist = () => $('artist').textContent || '';
+
   /* ---------- the reel ---------- */
+
+  function addRow(kind, text, t, end, line) {
+    const el = document.createElement('p');
+    el.className = `row ${kind}`;
+    if (kind === 'title') {
+      const tt = document.createElement('span');
+      tt.className = 'tt';
+      const ta = document.createElement('span');
+      ta.className = 'ta';
+      el.append(tt, ta);
+    } else {
+      el.textContent = text;
+    }
+    rows.push({ el, kind, text, t, end, line, h: 0 });
+    reelEl.appendChild(el);
+    return rows.length - 1;
+  }
+
+  // The song's name, in the title rows and the paused view.
+  function fillTitles() {
+    const title = songTitle();
+    const artist = songArtist();
+    for (const r of rows) {
+      if (r.kind !== 'title') continue;
+      r.el.querySelector('.tt').textContent = title;
+      r.el.querySelector('.ta').textContent = artist ? ` · ${artist}` : '';
+      r.text = artist ? `${title} · ${artist}` : title;
+    }
+    $('ptitle').textContent = title;
+    $('partist').textContent = artist;
+  }
 
   function buildReel() {
     reelEl.replaceChildren();
     rows = [];
     rowOfLine = [];
+    breakAfter = [];
+    introRow = -1;
+    outroRow = -1;
     focus = { row: -1, kind: '' };
-    if (lyrics.status === 'synced') {
-      lyrics.lines.forEach((line, i) => {
-        if (!line.text) {
-          rowOfLine[i] = -1;
-          return;
-        }
-        const p = document.createElement('p');
-        p.className = 'row';
-        p.textContent = line.text;
-        rowOfLine[i] = rows.length;
-        const next = lyrics.lines[i + 1];
-        rows.push({ el: p, line, t: line.t, end: next ? next.t : line.t + 5, text: line.text });
-        reelEl.appendChild(p);
-      });
+    const lines = lyrics.status === 'synced' ? lyrics.lines : [];
+    const sungAfter = (i) => {
+      let j = i + 1;
+      while (j < lines.length && !lines[j].text) j++;
+      return j < lines.length ? j : -1;
+    };
+    const first = sungAfter(-1);
+    if (first < 0) {
+      // Lyrics without timing, still loading, or none (for a song): the song's name, not an empty island.
+      introRow = addRow('title', '', 0, Infinity);
+      fillTitles();
+      return;
     }
+    if (lines[first].t >= INTRO_S) introRow = addRow('title', '', 0, lines[first].t);
+    let last = first;
+    lines.forEach((line, i) => {
+      if (!line.text) {
+        rowOfLine[i] = -1;
+        return;
+      }
+      last = i;
+      const j = sungAfter(i);
+      const next = j >= 0 ? lines[j] : null;
+      rowOfLine[i] = addRow('line', line.text, line.t, next ? next.t : line.t + 5, line);
+      // The music carrying on alone after this line, from when it has been sung to the next sung line, whether or
+      // not the lyrics mark it with empty lines: long enough, and the island draws in until the next line.
+      const sung = line.t + singingSpan(line, lines[i + 1]);
+      if (next && next.t - sung >= BREAK_S) {
+        const pause = { t: sung, end: next.t };
+        for (let k = i; k < j; k++) breakAfter[k] = pause;
+      }
+    });
+    outroRow = addRow('title', '', lines[last].t + singingSpan(lines[last], null), Infinity);
+    fillTitles();
   }
 
-  // Where the focused line sits: notch, at the top of the space below the notch; glass, centred in its row.
-  function focusOffset() {
-    if (focus.row < 0) return 0;
-    const el = rows[focus.row].el;
-    if (!glass()) return -el.offsetTop;
-    return -el.offsetTop + (rowHeight() - measure(rows[focus.row].text).height) / 2;
+  function heightOf(r) {
+    if (!lineHeight) lineHeight = measure('Ag').height;
+    if (!r.h) r.h = r.kind === 'line' ? measure(r.text).height : lineHeight;
+    return r.h;
   }
+  function forgetHeights() {
+    lineHeight = 0;
+    for (const r of rows) r.h = 0;
+  }
+  const widthOf = (r) => (r.kind === 'title' ? Math.min(measure(r.text).width, glass() ? GLASS_ROW_W : ROW_W) : measure(r.text).width);
 
-  // Each row slides by the same amount, but those after the focus set off a little later, so the reel rolls.
-  function applyFocus(jump) {
-    const y = focusOffset();
+  // Each line's slot is as tall as the lyric space, so one step of the reel takes the old line all the way out.
+  function slot() {
+    const r = rows[focus.row];
+    const h = r ? heightOf(r) : lineHeight || measure('Ag').height;
+    return glass() ? Math.max(geo.rowHeight, h + 14) : TOP_PAD + h + BOTTOM_PAD;
+  }
+  const rowY = (k, f, S) => (k - f) * S + (S - heightOf(rows[k])) / 2;
+
+  // Every row goes to its place relative to the line in focus, on the same spring: the old line is carried up
+  // and out as the new one rises from below. rise: the focused line comes up from below (after a pause).
+  function applyFocus(jump, from = -1, rise = false) {
+    const S = slot();
+    const f = focus.row >= 0 ? focus.row : from + 1; // nothing in focus: the last line moves on up and out
     rows.forEach((r, k) => {
       const c = r.el.classList;
+      const on = k === focus.row && !pausedView;
       c.toggle('is-now', k === focus.row && focus.kind === 'now');
       c.toggle('is-soon', k === focus.row && focus.kind === 'soon');
-      c.toggle('is-next', focus.row >= 0 && k === focus.row + 1);
-      c.toggle('is-past', focus.row >= 0 && k < focus.row);
+      c.toggle('is-on', on);
       if (k !== focus.row) r.el.style.removeProperty('--p');
-      const near = focus.row >= 0 && k >= focus.row - 2 && k <= focus.row + 3;
-      if (jump || !near) move(r.el, { y }, { duration: 0 });
-      else move(r.el, { y }, { ...ROLL, delay: Math.max(0, k - focus.row + 1) * (STAGGER_MS / 1000) });
+      const y = rowY(k, f, S);
+      const to = { y, opacity: on ? 1 : 0, filter: on ? 'blur(0px)' : 'blur(4px)' };
+      const near = Math.abs(k - f) <= 2 || k === from;
+      if (jump || !near) move(r.el, to, { duration: 0 });
+      else if (rise && on) move(r.el, { y: [y + S, y], opacity: [0, 1], filter: ['blur(4px)', 'blur(0px)'] }, { ...SCROLL, opacity: FADE_IN, filter: FADE_IN });
+      else move(r.el, to, { ...SCROLL, delay: on ? 0.04 : 0, opacity: on ? { ...FADE_IN, delay: 0.04 } : FADE_OUT, filter: on ? FADE_IN : FADE_OUT });
     });
+  }
+
+  // Paused: the lyric goes up and out and the song's name rises with ▶; playing again, the other way round.
+  function setPausedView(on) {
+    if (on === pausedView) return;
+    pausedView = on;
+    const S = slot();
+    const r = rows[focus.row];
+    if (on) {
+      if (r) move(r.el, { y: rowY(focus.row, focus.row, S) - S, opacity: 0, filter: 'blur(4px)' }, { ...SCROLL, opacity: FADE_OUT, filter: FADE_OUT });
+      for (const x of rows) x.el.classList.remove('is-on');
+      move(pmetaEl, { y: [S * 0.7, 0], opacity: [0, 1] }, { ...SCROLL, opacity: FADE_IN });
+    } else {
+      move(pmetaEl, { y: -S * 0.7, opacity: 0 }, { ...SCROLL, opacity: FADE_OUT });
+      applyFocus(false, -1, true);
+    }
   }
 
   // The line being sung fills with light from left to right (a soft karaoke sweep), word by word when the lyrics
   // have word timing, finishing when the line has probably been sung. A line waiting to be sung brightens over
-  // its last moments instead: a countdown to come in.
+  // its last moments instead: a count-in.
   function sweep(pos) {
     if (focus.row < 0 || reduceMotion) return;
     const r = rows[focus.row];
     if (focus.kind === 'now') {
       const next = lyrics.lines[lyrics.lines.indexOf(r.line) + 1];
       r.el.style.setProperty('--p', progressAt(r.line, r.line.t + singingSpan(r.line, next), pos).toFixed(3));
-    } else {
+    } else if (focus.kind === 'soon') {
       r.el.style.setProperty('--c', Math.min(1, Math.max(0, 1 - (r.t - pos) / COUNTDOWN_S)).toFixed(3));
     }
   }
@@ -148,22 +255,27 @@
   function stateNow() {
     if (!geo.active) return 'hidden';
     const hasTrack = !!(np && np.title);
-    if (expanded && hasTrack) return 'expanded';
-    // Nothing to sing along to (a talk, a movie clip): stay tucked away rather than show an equaliser.
+    // Nothing to sing along to (a talk, a movie clip): stay tucked away.
     const notSong = lyrics.status === 'none' && !(np && np.music);
-    if (!hasTrack || notSong || (!np.playing && Date.now() - pausedSince > PAUSE_IDLE_MS)) return geo.hasNotch ? 'idle' : 'hidden';
+    if (!hasTrack || notSong) return geo.hasNotch ? 'idle' : 'hidden';
+    if (!np.playing) return 'paused'; // however long: the song's name and ▶ wait there
+    if (expanded && !holdExpand) return 'expanded';
     return focus.row >= 0 ? 'lyric' : 'compact';
   }
 
   // The glass island's single row grows for a line that wraps to two lines.
   function rowHeight() {
-    if (focus.row < 0) return geo.rowHeight;
-    return Math.max(geo.rowHeight, measure(rows[focus.row].text).height + 14);
+    if (focus.row < 0 || pausedView) return geo.rowHeight;
+    return Math.max(geo.rowHeight, heightOf(rows[focus.row]) + 14);
   }
+
+  // The paused view's width: the longer of the song's name and the artist.
+  const pausedWidth = () => Math.max(textWidth(songTitle(), '650 13px'), textWidth(songArtist(), '500 11.5px'));
 
   function layout(force) {
     const state = stateNow();
     islandEl.dataset.state = state;
+    setPausedView(state === 'paused');
     publish(state);
     if (glass()) return layoutGlass(state, force);
 
@@ -176,10 +288,13 @@
       w = nw;
       r = 10;
     }
-    if ((state === 'lyric' || state === 'expanded') && focus.row >= 0) {
-      const now = measure(rows[focus.row].text);
-      w = Math.max(w, now.width + PAD * 2);
-      h = nh + TOP_PAD + now.height + BOTTOM_PAD;
+    if (state === 'paused') {
+      w = Math.max(w, Math.min(pausedWidth(), 360) + PAD * 2);
+      h = nh + TOP_PAD + PMETA_H + BOTTOM_PAD;
+      r = 22;
+    } else if ((state === 'lyric' || state === 'expanded') && focus.row >= 0) {
+      w = Math.max(w, widthOf(rows[focus.row]) + PAD * 2);
+      h = nh + slot();
       r = 22;
     }
     if (state === 'expanded') {
@@ -204,10 +319,12 @@
   // Glass: the window itself is the island, so ask the app for the size; the glass and the window spring to it.
   function layoutGlass(state, force) {
     const rowH = rowHeight();
-    let w = 200;
+    let w = state === 'compact' ? COMPACT_W : 200;
     let h = geo.rowHeight;
-    if ((state === 'lyric' || state === 'expanded') && focus.row >= 0) {
-      w = Math.max(w, measure(rows[focus.row].text).width + SIDES + 16);
+    if (state === 'paused') {
+      w = Math.min(420, Math.max(220, pausedWidth() + SIDES + 24));
+    } else if ((state === 'lyric' || state === 'expanded') && focus.row >= 0) {
+      w = Math.max(w, widthOf(rows[focus.row]) + SIDES + 16);
       h = rowH;
     }
     if (state === 'expanded') {
@@ -215,9 +332,9 @@
       h += MORE_H;
     }
     w = Math.min(w, GLASS_MAX_W);
-    rootStyle.setProperty('--nh', `${rowH}px`); // the cover and equaliser line up with the line being sung
+    rootStyle.setProperty('--nh', `${state === 'expanded' ? h - MORE_H : h}px`); // cover and equaliser line up with the row
     // A few pixels of width do not deserve a window resize; a new line that is much wider or narrower does.
-    // Nothing to show (paused a while, not a song): the app fades the glass away rather than leave it empty.
+    // Nothing to show (not a song, nothing playing): the app fades the glass away rather than leave it empty.
     const show = state !== 'hidden';
     const changed = Math.abs(w - asked.w) > 18 || h !== asked.h || show !== asked.show;
     if (!force && !changed) return undefined;
@@ -226,40 +343,43 @@
     return undefined;
   }
 
-
+  // What the island shows now: one line at a time, so timing does the reading-ahead.
+  function pick(pos) {
+    if (!rows.length) return { row: -1, kind: '' };
+    if (lyrics.status !== 'synced' || !rowOfLine.length) return { row: introRow, kind: 'title' };
+    const lines = lyrics.lines;
+    const i = indexAt(lines, pos);
+    let j = i + 1;
+    while (j < lines.length && !lines[j].text) j++;
+    const cur = i >= 0 ? lines[i] : null;
+    const next = j < lines.length ? lines[j] : null;
+    const brk = i >= 0 ? breakAfter[i] : undefined;
+    const comingIn = !!next && next.t - pos < SOON_S;
+    // An instrumental break: nothing to read, so the island draws in to the cover and the equaliser.
+    const BREAK = { row: -1, kind: 'break' };
+    if (cur && cur.text) {
+      // the next line takes over once this one has probably been sung (handoverAt), early enough to read
+      if (next && (pos >= handoverAt(cur, next) || (brk && comingIn))) return { row: rowOfLine[j], kind: 'soon' };
+      if (brk && pos >= brk.t + LINGER_S) return BREAK;
+      if (!next && pos >= rows[outroRow].t + LINGER_S) return { row: outroRow, kind: 'title' };
+      return { row: rowOfLine[i], kind: 'now' };
+    }
+    if (next && (comingIn || (!brk && (cur || introRow < 0)))) return { row: rowOfLine[j], kind: 'soon' };
+    if (brk) return BREAK;
+    if (!cur && introRow >= 0) return { row: introRow, kind: 'title' };
+    if (!next && outroRow >= 0) return { row: outroRow, kind: 'title' };
+    return { row: -1, kind: '' };
+  }
 
   function tick() {
-    let row = -1;
-    let kind = '';
     const pos = position();
-    if (lyrics.status === 'synced' && np && rows.length) {
-      // One line at a time, so timing does the reading-ahead: the next line takes over once the current one has
-      // probably been sung (handoverAt), early enough to read it before it is due.
-      const lines = lyrics.lines;
-      const i = indexAt(lines, pos);
-      let j = i + 1;
-      while (j < lines.length && !lines[j].text) j++;
-      const cur = i >= 0 ? lines[i] : null;
-      const next = j < lines.length ? lines[j] : null;
-      if (cur && cur.text) {
-        if (next && pos >= handoverAt(cur, next)) {
-          row = rowOfLine[j];
-          kind = 'soon';
-        } else {
-          row = rowOfLine[i];
-          kind = 'now';
-        }
-      } else if (next && next.t - pos < SOON_S) {
-        // Intro or instrumental break: the coming line waits in place, dimmed, then counts in.
-        row = rowOfLine[j];
-        kind = 'soon';
-      }
-    }
+    const { row, kind } = np ? pick(pos) : { row: -1, kind: '' };
     if (row !== focus.row || kind !== focus.kind) {
       const previous = focus.row;
-      const jump = previous < 0 || row < 0 || Math.abs(row - previous) > 3; // a seek or a fresh start: land, don't scroll past many lines
+      const jump = previous >= 0 && row >= 0 && Math.abs(row - previous) > 3; // a seek: land, don't scroll past many lines
+      const rise = previous < 0 && row >= 0; // something to show after nothing: it comes up from below
       focus = { row, kind };
-      applyFocus(jump);
+      applyFocus(jump, previous, rise);
     }
     sweep(pos);
     ring(pos);
@@ -278,7 +398,8 @@
     rootStyle.setProperty('--text-scale', looks.STEPS.textSize[s.textSize]);
     rootStyle.setProperty('--clarity', looks.STEPS.clarity[s.clarity]);
     rootStyle.setProperty('--cover', looks.STEPS.cover[s.cover]);
-    if (focus.row >= 0) applyFocus(true); // row heights changed
+    forgetHeights(); // the text size may have changed
+    if (rows.length) applyFocus(true);
     layout(true);
   }
 
@@ -358,6 +479,7 @@
   function setHover(inside) {
     if (inside === hover) return;
     hover = inside;
+    if (!inside) holdExpand = false;
     api.islandHover(inside);
     clearTimeout(hoverTimer);
     hoverTimer = setTimeout(
@@ -387,6 +509,7 @@
       mode: glass() ? 'glass' : 'notch',
       text: r && focus.kind === 'now' ? r.text : '',
       soon: r && focus.kind === 'soon' ? r.text : '',
+      item: focus.kind, // now · soon · title · break
       active: geo.active ? '1' : '0',
       shown: geo.shown ? '1' : '0',
       theme: islandEl.dataset.theme || '',
@@ -422,7 +545,8 @@
       islandEl.removeAttribute('style');
       shellEl.removeAttribute('style');
     }
-    if (focus.row >= 0) applyFocus(true);
+    forgetHeights(); // the glass row has its own font size
+    if (rows.length) applyFocus(true);
     layout(true);
     // Laid out for this screen: the app may show the window now (never before, so no half-made frame shows).
     if (!ready) {
@@ -431,20 +555,24 @@
     }
   });
   api.on('np', (report) => {
-    const wasPlaying = np && np.playing;
     np = report;
-    if (!np.playing && (wasPlaying || !pausedSince)) pausedSince = Date.now();
-    if (np.playing) pausedSince = 0;
     islandEl.classList.toggle('playing', np.playing);
     islandEl.classList.toggle('paused', !np.playing);
-    $('title').textContent = np.title || '';
-    $('artist').textContent = np.artist || '';
+    if (lyrics.status !== 'synced' || !lyrics.source) {
+      $('title').textContent = np.title || '';
+      $('artist').textContent = np.artist || '';
+    }
+    fillTitles();
   });
   api.on('lyrics', (result) => {
     lyrics = result;
     if (result.source && result.status === 'synced') {
       $('title').textContent = result.source.title || $('title').textContent;
       $('artist').textContent = result.source.artist || $('artist').textContent;
+    }
+    if (np && !(result.source && result.status === 'synced')) {
+      $('title').textContent = np.title || '';
+      $('artist').textContent = np.artist || '';
     }
     buildReel();
     tick();
@@ -463,6 +591,12 @@
 
   $('prev').addEventListener('click', () => command('previous'));
   $('play').addEventListener('click', () => command('toggle'));
+  // ▶ on the paused island: play, and stay a one-line island (the lyric rises) rather than open the controls.
+  $('resume').addEventListener('click', () => {
+    holdExpand = true;
+    command('toggle');
+    tick();
+  });
   $('next').addEventListener('click', () => command('next'));
   $('open').addEventListener('click', () => api.restore());
   $('disc').addEventListener('click', () => api.restore());
@@ -470,7 +604,12 @@
   $('later').addEventListener('click', () => api.nudge(-0.5));
 
   // Read-only hook for DevTools and the e2e test.
-  window.__floatlyrics = { position, state: () => islandEl.dataset.state };
+  window.__floatlyrics = {
+    position,
+    state: () => islandEl.dataset.state,
+    rows: () => rows.map((r) => ({ kind: r.kind, t: r.t, end: r.end })),
+    breaks: () => [...new Set(breakAfter.filter(Boolean))],
+  };
 
   layout(true);
   requestAnimationFrame(loop);

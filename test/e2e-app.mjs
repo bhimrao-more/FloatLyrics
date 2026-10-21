@@ -281,8 +281,9 @@ try {
       await sleep(500);
       const [i, a] = [await readIsland(), await read()];
       n++;
-      // The island may already have handed over to the next line (shown as "soon") so it can be read in time.
-      if (i.text === a.text || (i.soon && !i.text)) same++;
+      // The island may already have handed over to the next line (shown as "soon") so it can be read in time, or
+      // be showing a break's dots or the song's name between lines.
+      if (i.text === a.text || (i.soon && !i.text) || i.item === 'break' || i.item === 'title') same++;
     }
     check(same / n >= 0.8, 'island shows the same line as the lyrics clock (or the next, handed over early)', `${same}/${n} samples agree`);
     // Appearance changes reach the island live.

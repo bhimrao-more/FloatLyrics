@@ -235,6 +235,59 @@ body.glass[data-theme="light"] {
 .art:not([src]) {
   visibility: hidden;
 }
+/* The right end of the top row: the equaliser while playing, ▶ while paused (in the same spot). */
+.end {
+  display: grid;
+  place-items: center;
+  min-width: 26px;
+  height: 26px;
+}
+.end > * {
+  grid-area: 1 / 1;
+}
+.bars {
+  transition: opacity 0.22s var(--ease-out), transform 0.3s var(--ease-out);
+}
+.resume {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(var(--fg-rgb) / 0.16);
+  color: var(--fg);
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.5);
+  pointer-events: none;
+  /* a small pop in; a quick shrink away when pressed */
+  transition: opacity 0.2s var(--ease-out), transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.15s ease;
+}
+.resume svg {
+  width: 12px;
+  height: 12px;
+  margin-left: 2px;
+}
+.resume path {
+  fill: currentColor;
+}
+.resume:hover {
+  background: rgb(var(--fg-rgb) / 0.26);
+}
+.resume:active {
+  transform: scale(0.86);
+}
+.island[data-state="paused"] .resume {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+.island[data-state="paused"] .bars {
+  opacity: 0;
+  transform: scale(0.6);
+}
 .bars {
   display: flex;
   align-items: center;
@@ -291,11 +344,8 @@ body.glass[data-theme="light"] {
 }
 .reel {
   position: absolute;
-  top: 6px;
-  left: 50%;
-}
-.island.glassy .reel {
   top: 0;
+  left: 50%;
 }
 .row,
 .measure {
@@ -313,22 +363,20 @@ body.glass[data-theme="light"] {
 .glass .measure {
   font-size: calc(15px * var(--text-scale));
 }
-/* Rows only move and fade; none grows. The one being sung is filled with light up to --p (the karaoke sweep). */
+/* Rows sit one slot apart and only move and fade (island.js, on Motion springs); none grows. The one being sung
+   is filled with light up to --p (the karaoke sweep). */
 .row {
-  padding-bottom: 4px;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
   color: rgb(var(--fg-rgb) / 0.42);
   opacity: 0;
-  filter: blur(4px);
-  will-change: transform;
-  transition: opacity 0.5s var(--ease-out), filter 0.5s var(--ease-out), color 0.5s var(--ease-out);
-}
-.island.glassy .row {
-  padding-bottom: 0;
+  will-change: transform, opacity;
+  transition: color 0.5s var(--ease-out);
 }
 .row.is-now {
   /* sung words take the cover's colour, the rest stay bright: classic karaoke, readable from the first word */
-  opacity: 1;
-  filter: none;
   color: transparent;
   background: linear-gradient(
     90deg,
@@ -342,17 +390,51 @@ body.glass[data-theme="light"] {
 }
 .row.is-soon {
   /* waiting to be sung: dim, brightening over the last moments before it is due (--c, the count-in) */
-  opacity: 1;
-  filter: none;
   color: rgb(var(--fg-rgb) / calc(0.5 + 0.35 * var(--c, 0)));
-  transition: opacity 0.5s var(--ease-out), filter 0.5s var(--ease-out);
 }
-.row.is-next {
-  opacity: 0;
+/* The song's name: before the first line, after the last, or when the lyrics are not timed. */
+.row.title {
+  -webkit-line-clamp: 1;
+  color: rgb(var(--fg-rgb) / 0.78);
 }
-.row.is-past {
+.row.title .ta {
+  font-weight: 500;
+  color: rgb(var(--fg-rgb) / 0.5);
+}
+/* Paused: the song's name, where the lyric was (island.js scrolls it in and out). */
+.pmeta {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 0 4px;
   opacity: 0;
-  filter: blur(6px);
+  pointer-events: none;
+  text-align: center;
+  white-space: nowrap;
+}
+.island.notched .pmeta {
+  top: var(--top-pad, 6px);
+  height: 32px;
+}
+.pmeta span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pmeta .pt {
+  font: 650 13px/1.2 var(--font);
+  color: var(--fg);
+}
+.pmeta .pa {
+  font: 500 11.5px/1.2 var(--font);
+  color: var(--sub);
 }
 .measure {
   position: absolute;

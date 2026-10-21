@@ -16,9 +16,17 @@
             <span class="ring" id="ring"></span>
             <img class="art" id="art" alt="" />
           </div>
-          <div class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+          <div class="end">
+            <div class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+            <button type="button" class="resume" id="resume" aria-label="Play" title="Play">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.9v10.2a.7.7 0 0 0 1.06.6l8.1-5.1a.7.7 0 0 0 0-1.2l-8.1-5.1a.7.7 0 0 0-1.06.6z" /></svg>
+            </button>
+          </div>
         </div>
-        <div class="lyric" id="lyric" aria-live="polite"><div class="reel" id="reel"></div></div>
+        <div class="lyric" id="lyric" aria-live="polite">
+          <div class="reel" id="reel"></div>
+          <div class="pmeta" id="pmeta"><span class="pt" id="ptitle"></span><span class="pa" id="partist"></span></div>
+        </div>
         <div class="more">
           <div class="meta"><span class="title" id="title"></span><span class="artist" id="artist"></span></div>
           <div class="controls">

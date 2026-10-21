@@ -55,14 +55,24 @@ DynamicNotchKit's states and floating fallback are the model; no code is copied 
 - **Library.** [Motion](https://motion.dev) (the engine behind Framer Motion), MIT. GSAP was considered; it is free
   but not open source. Motion's springs are physical: an interrupted move keeps its velocity, which is what makes
   rapid line changes and resizes feel continuous.
-- **Reel.** Every line is a row in one column; the column slides up on a critically damped spring (stiffness 170,
-  damping 26: no wobble under words being read). Rows change state with a long ease-out
-  (`cubic-bezier(0.22, 1, 0.36, 1)`):
-  - current: bright, full size;
-  - next: 34% opacity, scaled 0.84, one line;
-  - past: fades out and blurs 5px as it leaves upward.
-
-  A jump of more than three lines (a seek) lands without scrolling.
+- **Reel.** Every line has a slot as tall as the island's lyric space, so one step carries the old line all the way
+  up and out of the top while the next rises in from below: bottom to top, like scrolling, not a crossfade (the
+  user's wish, 2026-10-21; an earlier version moved lines by only one text line and read as a fade). All rows ride
+  one gently underdamped spring (stiffness 140, damping 19, damping ratio ≈ 0.8: the glide of a Framer Motion
+  layout animation); the incoming line fades in with Apple's long ease-out (`cubic-bezier(0.22, 1, 0.36, 1)`,
+  0.42s) and sharpens from a 4px blur, the outgoing one fades out a little quicker. A jump of more than three
+  lines (a seek) lands without scrolling.
+- **Between lines.** The island is never empty while a song plays:
+  - intro (4s or more before the first line): the song's name and artist;
+  - instrumental break (6s or more from when a line has been sung to the next, empty lyric lines or not): the
+    line goes up and out and the island draws in to just the cover and the equaliser, side by side with no gap
+    (glass: 92px wide; notch: the notch with the cover and equaliser either side). Apple Music-style filling dots
+    were tried and rejected by the user (2026-10-21);
+  - the next line rises in 3s before it is due, dim, and brightens over its last 1.5s (a count-in);
+  - after the last line, or with lyrics that are not timed: the song's name.
+- **Paused.** The island stays, however long, with the song's name where the lyric was and ▶ where the equaliser
+  was (the lyric goes up and out, the name rises in). ▶ plays: the button shrinks away and the lyric rises from
+  below. Paused, hover does not open the controls, so ▶ stays put under the pointer.
 - **Shape.** Width, height and corners spring with stiffness 380, damping 25 (damping ratio ≈ 0.65: the slight
   overshoot of iPhone's island).
 - **Type.** SF Pro (system), 16px semibold (15px in the pill), tracking −0.014em, balanced wrapping, two lines max.
@@ -82,9 +92,10 @@ and glass are described under *Glass island* below.
 | State | When | Size |
 | --- | --- | --- |
 | hidden | the window is open | — |
-| idle | nothing playing, or paused for 15s | exactly the notch (black on black, invisible) |
-| compact | playing, between lyric lines or no synced lyrics | notch + 46px each side: cover left, equaliser right |
-| lyric | a line is being sung | widens to fit the line (max 600px, two lines max), grows below the notch |
+| idle | nothing playing | exactly the notch (black on black, invisible) |
+| compact | playing, nothing to read: an instrumental break, or not loaded yet | notch + 46px each side: cover left, equaliser right; glass: just the two side by side (92px) |
+| lyric | a line, or the song's name | widens to fit the line (max 600px, two lines max), grows below the notch |
+| paused | paused, for as long as it stays paused | the song's name below the notch, ▶ on the right |
 | expanded | hover (140ms in, 380ms out) | at least 400px: adds title, artist, ⏮ ⏯ ⏭, Open |
 
 - **Motion.** Width and height ride an underdamped spring (ζ 0.62, 0.6s) sampled into a CSS `linear()` easing, so
@@ -109,7 +120,7 @@ it was taken out.
 It follows the window's theme, text size, clarity and cover colour live; the glass tint turns light for the Light
 theme. It resizes on a spring (stiffness 380, damping 27) stepped by the main process, the glass following the
 window; small width changes (18px or less) do not resize it. When there is nothing to show
-(paused for 15s, not a song) it fades away instead of leaving empty glass at the top of the screen.
+(nothing playing, not a song) it fades away instead of leaving empty glass at the top of the screen.
 
 ## Singing along: timing (`extension/core.js`)
 

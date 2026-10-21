@@ -2,7 +2,7 @@
 // then (1) storms play/pause, from the page and from the island's own button, and (2) moves the island between
 // every connected screen, again and again. After each step the island must be alive, in the right mode for its
 // screen (notch or glass), and drawn entirely inside its window: nothing cropped.
-//   npm run test:island
+//   npm run test:island          FL_QUICK=1 FL_URL=<watch url>: only the pause and the gaps, on another song
 import puppeteer from 'puppeteer';
 import electronPath from 'electron';
 import { spawn, execFileSync } from 'node:child_process';
@@ -56,14 +56,19 @@ try {
   const cdp = await page.createCDPSession();
   const { windowId } = await cdp.send('Browser.getWindowForTarget');
   await page.goto(process.env.FL_URL || 'https://music.youtube.com/watch?v=dQw4w9WgXcQ', { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await page.waitForFunction(
-    () => {
-      const v = document.querySelector('#movie_player video') || document.querySelector('video');
-      if (v) v.volume = 0.02;
-      return v && !v.paused && v.currentTime > 1 && v.duration > 60 && !document.querySelector('.ad-showing');
-    },
-    { timeout: 150000, polling: 500 },
-  );
+  // Past any advert and playing the song. Polled, because the page swaps its context when an advert ends.
+  for (let end = Date.now() + 180000; ; ) {
+    const ok = await page
+      .evaluate(() => {
+        const v = document.querySelector('#movie_player video') || document.querySelector('video');
+        if (v) v.volume = 0.02;
+        return !!v && !v.paused && v.currentTime > 1 && v.duration > 60 && !document.querySelector('.ad-showing');
+      })
+      .catch(() => false);
+    if (ok) break;
+    if (Date.now() > end) throw new Error('the test player never started the song');
+    await sleep(500);
+  }
   await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } }); // out of the way; it keeps playing
   const video = () =>
     page.evaluate(() => {
@@ -124,13 +129,17 @@ try {
           const r = document.querySelector(sel).getBoundingClientRect();
           if (!inside(r)) problems.push(`${sel} cropped`);
         }
-        const row = document.querySelector('.row.is-now, .row.is-soon');
+        const row = document.querySelector('.row.is-on');
         if (row) {
           const r = row.getBoundingClientRect();
           if (r.top < clip.top - 1 || r.bottom > clip.bottom + 1) problems.push(`lyric line cropped (${Math.round(r.top)}–${Math.round(r.bottom)} in ${Math.round(clip.top)}–${Math.round(clip.bottom)})`);
         }
       }
-      return { mode: d.mode, state: d.state, active: d.active, shown: d.shown, text: d.text || d.soon || '', W, H, x: screenX, y: screenY, pos: window.__floatlyrics.position(), problems, hard };
+      if (d.state === 'paused') {
+        const pm = document.getElementById('pmeta').getBoundingClientRect();
+        if (!inside(pm)) problems.push("paused song name cropped");
+      }
+      return { mode: d.mode, state: d.state, item: d.item, active: d.active, shown: d.shown, text: d.text || d.soon || '', W, H, x: screenX, y: screenY, pos: window.__floatlyrics.position(), problems, hard };
     });
 
   await win.evaluate(() => document.getElementById('min').click());
@@ -190,7 +199,9 @@ try {
   const options = await win.evaluate(() => window.floatlyrics.displays());
   console.log('island screens offered:', options.map((o) => `${o.label}${o.notch ? ' (notch)' : ''}`).join(' · '));
   check(options.filter((o) => o.id.startsWith('display:')).length === screens.length, 'every connected screen is offered for the island', `${options.length} options for ${screens.length} screens`);
-  const order = [...options, ...options.slice().reverse(), ...options];
+  // FL_QUICK=1: skip the screen tour and storms (for trying the gaps and pause on another song, with FL_URL).
+  const QUICK = !!process.env.FL_QUICK;
+  const order = QUICK ? [] : [...options, ...options.slice().reverse(), ...options];
   for (const o of order) {
     await win.evaluate((id, name) => window.floatlyrics.setSettings({ islandScreen: id, islandScreenName: name || '' }), o.id, o.name);
     const glitches = [];
@@ -208,6 +219,51 @@ try {
     check(!glitches.length, `moving to ${o.label} shows no broken frame`, glitches.slice(0, 3).join(' | '));
   }
 
+  // Paused: the island stays (longer than the old 15s timeout) with the song's name and ▶; ▶ plays again, the
+  // button goes and the lyric rises.
+  const styleOf = () =>
+    isl.evaluate(() => ({
+      resume: Number(getComputedStyle(document.getElementById('resume')).opacity),
+      pmeta: Number(getComputedStyle(document.getElementById('pmeta')).opacity),
+      title: document.getElementById('ptitle').textContent,
+      line: Number((document.querySelector('.row.is-on') && getComputedStyle(document.querySelector('.row.is-on')).opacity) || 0),
+    }));
+  async function pausedAndBack(where) {
+    await page.evaluate(() => document.querySelector('video').pause());
+    await settle((y) => y.state === 'paused' && y.shown === '1', 4000);
+    await sleep(17000);
+    let x = await inspect(isl);
+    let v = await styleOf();
+    check(x.state === 'paused' && x.shown === '1' && !x.problems.length && v.resume > 0.9 && v.pmeta > 0.9 && !!v.title, `${where}: paused for 17s, the island stays with the song's name and ▶`, `${x.state} shown=${x.shown} ${JSON.stringify(v)} ${x.problems.join('; ')}`);
+    await isl.evaluate(() => document.getElementById('resume').click());
+    x = await settle((y) => y.state === 'lyric' && healthy(y), 5000);
+    await sleep(700);
+    v = await styleOf();
+    const playing = !(await video()).paused;
+    check(playing && !!x && x.state === 'lyric' && v.resume < 0.1 && v.pmeta < 0.1 && v.line > 0.9, `${where}: ▶ plays; the button goes and the lyric comes up`, `playing=${playing} ${x && x.state} ${JSON.stringify(v)}`);
+  }
+
+  // Between lines: the song's name in the intro; in an instrumental break the island draws in to the cover and the
+  // equaliser, with no empty space between them.
+  async function gaps(where) {
+    const list = await isl.evaluate(() => window.__floatlyrics.rows());
+    const intro = list[0] && list[0].kind === 'title' && list[0].end < 1e9 ? list[0] : null;
+    const brk = (await isl.evaluate(() => window.__floatlyrics.breaks()))[0];
+    if (intro) {
+      await page.evaluate((t) => (document.querySelector('video').currentTime = t), Math.max(0.5, intro.end - 8));
+      const x = await settle((y) => y.item === 'title' && healthy(y), 4000);
+      check(!!x && x.item === 'title', `${where}: the intro shows the song's name`, x ? `${x.item} at ${x.pos.toFixed(1)}s` : 'nothing');
+    } else console.log(`SKIP  ${where}: intro — this song starts singing straight away`);
+    if (brk) {
+      await page.evaluate((t) => (document.querySelector('video').currentTime = t), brk.t + 2.5);
+      // glass: the window itself narrows; notch: the island is the notch plus the cover and equaliser either side
+      const x = await settle((y) => y.item === 'break' && y.state === 'compact' && healthy(y) && (y.mode !== 'glass' || y.W <= 100), 4000);
+      check(!!x && x.item === 'break' && x.state === 'compact', `${where}: an instrumental break draws in to the cover and the equaliser`, x ? `${x.state} ${x.W}×${x.H} at ${x.pos.toFixed(1)}s (break ${brk.t.toFixed(1)}–${brk.end.toFixed(1)}s)` : 'nothing');
+    } else console.log(`SKIP  ${where}: break — no instrumental break of 6s or more in this song`);
+    await page.evaluate(() => (document.querySelector('video').currentTime = 42));
+    await settle(healthy, 4000);
+  }
+
   // Storm both kinds of island.
   for (const kind of ['notch', 'glass']) {
     const o = options.find((x) => x.id.startsWith('display:') && x.notch === (kind === 'notch'));
@@ -217,7 +273,9 @@ try {
     }
     await win.evaluate((id, name) => window.floatlyrics.setSettings({ islandScreen: id, islandScreenName: name }), o.id, o.name);
     await settle((x) => healthy(x) && x.mode === kind, 6000);
-    await storm(`${kind} island on ${o.label}`);
+    if (!QUICK) await storm(`${kind} island on ${o.label}`);
+    await pausedAndBack(`${kind} island`);
+    await gaps(`${kind} island`);
   }
 } catch (err) {
   check(false, 'test ran to completion', String(err && err.stack));
